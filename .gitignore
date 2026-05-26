@@ -1,0 +1,14 @@
+build/
+install/
+log/
+my_logs/
+
+__pycache__/
+*.py[cod]
+*.so
+*.o
+*.a
+
+.vscode/
+.agents/
+.codex/
