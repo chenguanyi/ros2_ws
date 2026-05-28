@@ -31,7 +31,7 @@ UartToStm32::UartToStm32(rclcpp::Node::SharedPtr node)
   min_valid_height_cm_(0),
   max_valid_height_cm_(500)
 {
-  RCLCPP_INFO(node_->get_logger(), "UartToStm32 created");
+  RCLCPP_DEBUG(node_->get_logger(), "UartToStm32 created");
 }
 
 UartToStm32::~UartToStm32()
@@ -52,8 +52,8 @@ bool UartToStm32::initialize(double update_rate, const std::string & source_fram
     source_frame_ = source_frame;
     target_frame_ = target_frame;
 
-    RCLCPP_INFO(node_->get_logger(), "UartToStm32 initialized with update rate: %.1f Hz", update_rate_);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(node_->get_logger(), "UartToStm32 initialized with update rate: %.1f Hz", update_rate_);
+    RCLCPP_DEBUG(
       node_->get_logger(), "Looking for transform from '%s' to '%s'",
       source_frame_.c_str(), target_frame_.c_str());
 
@@ -191,7 +191,7 @@ bool UartToStm32::initialize(double update_rate, const std::string & source_fram
       height_source_.c_str(),
       laser_height_topic_.c_str(),
       forward_height_0x05_ ? "on" : "off");
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       node_->get_logger(),
       "Subscribed to /velocity_map, /active_controller, /target_velocity, /mission_complete, and aux command topics");
     return true;
@@ -232,7 +232,7 @@ void UartToStm32::processTfTransform(const geometry_msgs::msg::TransformStamped 
   current_yaw_ = yaw;
   yaw_valid_ = true;
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 2000,
     "Transform %s -> %s: pos(%.3f, %.3f, %.3f) rot(%.3f, %.3f, %.3f)",
     source_frame_.c_str(), target_frame_.c_str(), x, y, z, roll, pitch, yaw);
@@ -260,7 +260,7 @@ void UartToStm32::activeControllerCallback(const std_msgs::msg::UInt8::SharedPtr
     return;
   }
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 2000,
     "Ignoring /active_controller=%u. Target velocity forwarding stays %s.",
     static_cast<unsigned>(msg->data),
@@ -279,7 +279,7 @@ void UartToStm32::velocityCallback(const geometry_msgs::msg::Twist::SharedPtr ms
   const double angular_y = msg->angular.y;
   const double angular_z = msg->angular.z;
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 2000,
     "Velocity: linear(%.3f, %.3f, %.3f) angular(%.3f, %.3f, %.3f)",
     linear_x, linear_y, linear_z, angular_x, angular_y, angular_z);
@@ -300,7 +300,7 @@ Eigen::Vector3d UartToStm32::transformVelocity(const Eigen::Vector3d & linear, d
 
   const Eigen::Vector3d transformed = rz * linear;
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 2000,
     "Velocity transform: yaw=%.3f deg, original(%.3f,%.3f,%.3f) -> transformed(%.3f,%.3f,%.3f)",
     yaw * 180.0 / M_PI,
@@ -334,7 +334,7 @@ void UartToStm32::sendVelocityToSerial(const Eigen::Vector3d & transformed_veloc
     data[5] = static_cast<uint8_t>((vel_z >> 8) & 0xFF);
 
     if (serial_comm_->send_protocol_data(VELOCITY_FRAME_ID, static_cast<uint8_t>(data.size()), data)) {
-      RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+      RCLCPP_DEBUG_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
         "Sent velocity data: x=%d, y=%d, z=%d (cm/s)", vel_x, vel_y, vel_z);
     } else {
       RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
@@ -348,7 +348,7 @@ void UartToStm32::sendVelocityToSerial(const Eigen::Vector3d & transformed_veloc
 void UartToStm32::targetVelocityCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
 {
   if (!route_task_active_) {
-    RCLCPP_INFO_THROTTLE(
+    RCLCPP_DEBUG_THROTTLE(
       node_->get_logger(), *node_->get_clock(), 5000,
       "Dropping /target_velocity because /active_controller is not in mission mode.");
     return;
@@ -365,7 +365,7 @@ void UartToStm32::targetVelocityCallback(const std_msgs::msg::Float32MultiArray:
   const float vz_cm_per_s = msg->data[2];
   const float vyaw_deg_per_s = msg->data[3];
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 1000,
     "Target Velocity: linear(%.1f, %.1f, %.1f)cm/s angular(%.1f)deg/s",
     vx_cm_per_s, vy_cm_per_s, vz_cm_per_s, vyaw_deg_per_s);
@@ -399,7 +399,7 @@ void UartToStm32::sendTargetVelocityToSerial(
     data[7] = static_cast<uint8_t>((vel_yaw >> 8) & 0xFF);
 
     if (serial_comm_->send_protocol_data(TARGET_VELOCITY_FRAME_ID, static_cast<uint8_t>(data.size()), data)) {
-      RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      RCLCPP_DEBUG_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
         "Sent target velocity data: x=%d, y=%d, z=%d, yaw=%d",
         vel_x, vel_y, vel_z, vel_yaw);
     } else {
@@ -424,7 +424,7 @@ void UartToStm32::protocolDataHandler(uint8_t id, const std::vector<uint8_t> & d
         std_msgs::msg::UInt8 msg;
         msg.data = first;
         mission_step_pub_->publish(msg);
-        RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+        RCLCPP_DEBUG_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
           "Published /mission_step: %u (from 0xF1 frame)", static_cast<unsigned>(first));
       }
       if (has_st_ready_pub_) {
@@ -466,7 +466,7 @@ void UartToStm32::protocolDataHandler(uint8_t id, const std::vector<uint8_t> & d
       const int16_t vel_z = static_cast<int16_t>(data[4] | (data[5] << 8));
       const int16_t yaw = static_cast<int16_t>(data[6] | (data[7] << 8));
 
-      RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      RCLCPP_DEBUG_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
         "[0xB1] Target Speed -> X:%d, Y:%d, Z:%d, Yaw:%d",
         vel_x, vel_y, vel_z, yaw);
       break;
@@ -490,7 +490,7 @@ void UartToStm32::sendMissionCompleteToSerial()
 
   const std::vector<uint8_t> data(1, MISSION_COMPLETE_VALUE);
   if (serial_comm_->send_protocol_data(MISSION_COMPLETE_FRAME_ID, static_cast<uint8_t>(data.size()), data)) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       node_->get_logger(),
       "Sent mission complete frame: id=0x%02X value=0x%02X",
       static_cast<unsigned>(MISSION_COMPLETE_FRAME_ID),
@@ -656,7 +656,7 @@ bool UartToStm32::updateAuxStateAndSend(const char * name, std::atomic<std::uint
   slot.store(value);
   const bool ok = sendCombinedAuxControlToSerial();
   if (ok) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       node_->get_logger(),
       "Updated %s state=%u and sent combined 0x%02X packet.",
       name,
@@ -694,7 +694,7 @@ bool UartToStm32::sendCombinedAuxControlToSerial()
     return false;
   }
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 1000,
     "Sent combined aux control frame 0x%02X: [arm=%u, magnet=%u, signal=%u]",
     static_cast<unsigned>(AUX_CONTROL_FRAME_ID),
@@ -730,7 +730,7 @@ bool UartToStm32::sendHeightToSerial(int16_t height_cm)
     return false;
   }
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 1000,
     "Forwarded height frame 0x%02X: %d cm",
     static_cast<unsigned>(RAW_HEIGHT_FRAME_ID),
@@ -769,7 +769,7 @@ void UartToStm32::publishMissionHeight(int16_t height_cm, const char * source_na
     sendHeightToSerial(height_cm);
   }
 
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 1000,
     "Published /height=%d cm from %s, forward_0x05=%s",
     height_cm,

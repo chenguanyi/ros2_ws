@@ -38,7 +38,7 @@ void AuxController::setAll(
   publish(arm_pub_, arm_state);
   publish(magnet_pub_, magnet_state);
   publish(signal_pub_, signal_state);
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     node_.get_logger(),
     "Published aux states: arm=%u magnet=%u signal=%u",
     static_cast<unsigned>(arm_state),

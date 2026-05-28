@@ -190,8 +190,8 @@ PositionPIDController::PositionPIDController()
     std::bind(&PositionPIDController::controlTimerCallback, this));
 
   RCLCPP_INFO(get_logger(), "Position PID Controller initialized (%.1f Hz)", control_frequency_);
-  RCLCPP_INFO(get_logger(), "Frames: map=%s, laser_link=%s", map_frame_.c_str(), laser_link_frame_.c_str());
-  RCLCPP_INFO(get_logger(), "Height source: /height");
+  RCLCPP_DEBUG(get_logger(), "Frames: map=%s, laser_link=%s", map_frame_.c_str(), laser_link_frame_.c_str());
+  RCLCPP_DEBUG(get_logger(), "Height source: /height");
 }
 
 void PositionPIDController::targetPositionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
@@ -207,7 +207,7 @@ void PositionPIDController::targetPositionCallback(const std_msgs::msg::Float32M
   target_yaw_deg_ = static_cast<double>(msg->data[3]);
   has_target_position_ = true;
 
-  RCLCPP_INFO(get_logger(),
+  RCLCPP_DEBUG(get_logger(),
     "Received target: x=%.1fcm y=%.1fcm z=%.1fcm yaw=%.1fdeg",
     target_x_cm_, target_y_cm_, target_z_cm_, target_yaw_deg_);
 }
@@ -454,16 +454,16 @@ void PositionPIDController::loadParameters()
   pid_visual_x_.setDeadzone(visual_pixel_deadzone_);
   pid_visual_y_.setDeadzone(visual_pixel_deadzone_);
 
-  RCLCPP_INFO(get_logger(),
+  RCLCPP_DEBUG(get_logger(),
     "PID params: XY(kp=%.2f, ki=%.2f, kd=%.2f) Yaw(kp=%.2f, ki=%.2f, kd=%.2f) Z(kp=%.2f, ki=%.2f, kd=%.2f)",
     kp_xy, ki_xy, kd_xy, kp_yaw, ki_yaw, kd_yaw, kp_z, ki_z, kd_z);
-  RCLCPP_INFO(get_logger(),
+  RCLCPP_DEBUG(get_logger(),
     "Visual PID params: X(kp=%.3f, ki=%.3f, kd=%.3f) Y(kp=%.3f, ki=%.3f, kd=%.3f) deadzone=%.1f max_vel=%.1f stale=%.1fs offset=(%.1f, %.1f)",
     visual_kp_x_, visual_ki_x_, visual_kd_x_,
     visual_kp_y_, visual_ki_y_, visual_kd_y_,
     visual_pixel_deadzone_, visual_max_xy_velocity_, visual_data_timeout_sec_,
     visual_target_offset_x_px_, visual_target_offset_y_px_);
-  RCLCPP_INFO(get_logger(),
+  RCLCPP_DEBUG(get_logger(),
     "Velocity limits: linear=%.1fcm/s angular=%.1fdeg/s vertical=%.1fcm/s",
     max_linear_vel_, max_angular_vel_, max_vertical_vel_);
 }

@@ -6,6 +6,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     camera_index = LaunchConfiguration("camera_index")
+    camera_device = LaunchConfiguration("camera_device")
     width = LaunchConfiguration("width")
     height = LaunchConfiguration("height")
     camera_fps = LaunchConfiguration("camera_fps")
@@ -16,6 +17,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         DeclareLaunchArgument("camera_index", default_value="0", description="[相机] 相机索引。"),
+        DeclareLaunchArgument("camera_device", default_value="", description="[相机] 设备路径；非空时优先于 camera_index。"),
         DeclareLaunchArgument("width", default_value="640", description="[相机] 图像宽度。"),
         DeclareLaunchArgument("height", default_value="480", description="[相机] 图像高度。"),
         DeclareLaunchArgument("camera_fps", default_value="30", description="[相机] 设备采集帧率。"),
@@ -30,6 +32,7 @@ def generate_launch_description() -> LaunchDescription:
             output="screen",
             parameters=[{
                 "camera_index": camera_index,
+                "camera_device": camera_device,
                 "width": width,
                 "height": height,
                 "camera_fps": camera_fps,

@@ -12,6 +12,19 @@
 ros2 launch my_launch fixed_waypoint.launch.py
 ```
 
+G 题植保任务入口：
+
+```bash
+ros2 launch my_launch plant_protection.launch.py
+```
+
+任务 launch 会自动把 ROS 日志保存到工作区的任务目录：
+
+```text
+mylog/fixed_waypoint/
+mylog/plant_protection/
+```
+
 常用参数：
 
 ```bash
@@ -34,7 +47,7 @@ MISSION_STEPS = [
 - `pose`: `(x_cm, y_cm, z_cm, yaw_deg)`，单位分别是 cm、cm、cm、度。
 - `arm`: 机械臂动作，0 或 1。
 - `magnet`: 电磁铁动作，0 或 1。
-- `signal`: 通用 signal 输出，0 或 1。G 题里可用它控制激光撒药。
+- `signal`: 通用 signal 输出，0 或 1。
 - `hold_sec`: 到达该航点后等待多久再继续。
 
 ## 2. 当前保留的基础话题
@@ -150,9 +163,9 @@ private:
 
 不要把比赛题目的规则写进 PID、UART、相机源或 `WaypointNavigator`。
 
-## 5. G 题建议怎么做
+## 5. G 题植保任务
 
-后续 G 题应新增：
+当前 G 题已新增：
 
 ```text
 plant_protection_task_node.cpp
@@ -166,8 +179,9 @@ plant_protection.launch.py
 - 从 A 格开始生成覆盖路径。
 - 遇到发挥部分的 3-4 个遮挡格时，从任务参数中排除这些格。
 - 飞到每个撒药点时调用 `flight_.goTo(...)`。
-- 到点后用 `aux_.setSignal(true)` 控制激光闪烁或撒药动作，再关闭。
-- 条码识别放在任务内部或任务专属视觉辅助类中。
+- 到点后用 `aux_.setMagnet(true)` 控制向下激光闪烁，再关闭。
+- `signal` 位复用为 LED，`barcode_value` 参数用于条码数字预留显示。
+- 条码识别后续可放在任务内部或任务专属视觉辅助类中。
 - 条码数字转换为半径后，任务自己计算圆周降落点，再调用 `flight_.goTo(...)`。
 
 `WaypointNavigator` 不知道 G 题是什么，它只负责飞到指定点。

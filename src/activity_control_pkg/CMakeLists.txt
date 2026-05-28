@@ -10,10 +10,14 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(angles REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZBAR REQUIRED zbar)
 
 add_library(mission_core SHARED
   src/core/aux_controller.cpp
@@ -54,6 +58,43 @@ else()
   target_compile_options(fixed_waypoint_task_node PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(plant_protection_task_node
+  src/tasks/plant_protection_task_node.cpp
+)
+target_link_libraries(plant_protection_task_node mission_core)
+ament_target_dependencies(plant_protection_task_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+)
+if(MSVC)
+  target_compile_options(plant_protection_task_node PRIVATE /W4)
+else()
+  target_compile_options(plant_protection_task_node PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(barcode_reader_node
+  src/tasks/barcode_reader_node.cpp
+)
+target_include_directories(barcode_reader_node PRIVATE
+  ${ZBAR_INCLUDE_DIRS}
+)
+target_link_libraries(barcode_reader_node
+  ${OpenCV_LIBS}
+  ${ZBAR_LIBRARIES}
+)
+ament_target_dependencies(barcode_reader_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  cv_bridge
+)
+if(MSVC)
+  target_compile_options(barcode_reader_node PRIVATE /W4)
+else()
+  target_compile_options(barcode_reader_node PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 install(TARGETS mission_core
   EXPORT export_mission_core
   ARCHIVE DESTINATION lib
@@ -63,6 +104,8 @@ install(TARGETS mission_core
 
 install(TARGETS
   fixed_waypoint_task_node
+  plant_protection_task_node
+  barcode_reader_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

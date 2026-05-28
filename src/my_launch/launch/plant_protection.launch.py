@@ -14,51 +14,39 @@ from launch_ros.substitutions import FindPackageShare
 
 
 # =============================================================================
-# 固定航点任务参数面板
+# G 题植保任务参数面板
 # 平时调试只改这里：
-# 每个 step 是一个航点，到点后会执行 arm/magnet/signal 并等待 hold_sec。
-# 注意：hold_sec=0 会在到点后立刻切到下一个航点；如果该点需要激光/电磁铁动作，
-# 必须给足停留时间，否则 magnet=1 只会保持一个调度周期左右。
-# pose = (x_cm, y_cm, z_cm, yaw_deg)
+# magnet 位复用为向下激光：1 发射，0 关闭。
+# signal 位复用为 LED：1 亮，0 灭。
+# home_pose = (x_cm, y_cm, z_cm, yaw_deg)
 # =============================================================================
 
-MISSION_STEPS = [
-    {
-        "pose": (0.0, 0.0, 80.0, 0.0),
-        "arm": 0,
-        "magnet": 0,
-        "signal": 0,
-        "hold_sec": 0.0,
-    },
-    {
-        "pose": (100.0, 0.0, 80.0, 0.0),
-        "arm": 0,
-        "magnet": 1,
-        "signal": 0,
-        "hold_sec": 1.0,
-    },
-    {
-        "pose": (100.0, -100.0, 80.0, 0.0),
-        "arm": 0,
-        "magnet": 0,
-        "signal": 0,
-        "hold_sec": 0.0,
-    },
-    {
-        "pose": (0.0, 0.0, 80.0, 0.0),
-        "arm": 0,
-        "magnet": 0,
-        "signal": 0,
-        "hold_sec": 0.0,
-    },
-    {
-        "pose": (0.0, 0.0, 0.0, 0.0),
-        "arm": 0,
-        "magnet": 0,
-        "signal": 0,
-        "hold_sec": 0.0,
-    },
-]
+CRUISE_HEIGHT_CM = 150.0
+HOME_POSE = (0.0, 0.0, 0.0, 0.0)
+CELL_SIZE_CM = 50.0
+LASER_ON_SEC = 0.4
+LASER_OFF_SEC = 1.5
+LASER_PULSE_COUNT = 2
+EXCLUDED_CELLS = []
+BARCODE_VALUE = 0
+BARCODE_TOPIC = "/plant_protection/barcode_value"
+BARCODE_SCAN_POSE = (0.0, 120.0, 105.0, 0.0)
+BARCODE_SCAN_TIMEOUT_SEC = 10.0
+CIRCLE_LANDING_ANGLE_DEG = 0.0
+
+DOWN_CAMERA_DEVICE = "/dev/camera_decxin"
+SIDE_CAMERA_DEVICE = "/dev/camera_wdr5m"
+DOWN_IMAGE_TOPIC = "/down_camera/image_raw"
+SIDE_IMAGE_TOPIC = "/side_camera/image_raw"
+COLOR_DECISION_ROI_FRACTION = 0.35
+COLOR_THRESHOLD_ROI_FRACTION = 0.80
+COLOR_MAX_IMAGE_AGE_SEC = 0.5
+COLOR_MIN_CONFIDENCE = 0.08
+COLOR_NON_GREEN_INDEX_MAX = 0.10
+
+LED_ON_SEC = 0.25
+LED_OFF_SEC = 0.25
+LED_REPEAT_GAP_SEC = 2.0
 
 
 def _workspace_root() -> str:
@@ -91,10 +79,9 @@ def generate_launch_description() -> LaunchDescription:
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
-    task_log_dir = _task_log_dir("fixed_waypoint")
+    task_log_dir = _task_log_dir("plant_protection")
 
-    waypoints = [value for step in MISSION_STEPS for value in step["pose"]]
-    fixed_task_params = {
+    plant_task_params = {
         "map_frame": "map",
         "laser_link_frame": "laser_link",
         "output_topic": "/target_position",
@@ -102,13 +89,31 @@ def generate_launch_description() -> LaunchDescription:
         "position_tolerance_cm": 8.0,
         "height_tolerance_cm": 6.0,
         "yaw_tolerance_deg": 5.0,
+        "log_waypoint_targets": False,
         "timer_period_sec": 0.05,
-        "waypoints": waypoints,
-        "arm_states": [step["arm"] for step in MISSION_STEPS],
-        "magnet_states": [step["magnet"] for step in MISSION_STEPS],
-        "signal_states": [step["signal"] for step in MISSION_STEPS],
-        "hold_seconds": [step["hold_sec"] for step in MISSION_STEPS],
+        "cruise_height_cm": CRUISE_HEIGHT_CM,
+        "home_pose": list(HOME_POSE),
+        "cell_size_cm": CELL_SIZE_CM,
+        "laser_on_sec": LASER_ON_SEC,
+        "laser_off_sec": LASER_OFF_SEC,
+        "laser_pulse_count": LASER_PULSE_COUNT,
+        "image_topic": DOWN_IMAGE_TOPIC,
+        "color_decision_roi_fraction": COLOR_DECISION_ROI_FRACTION,
+        "color_threshold_roi_fraction": COLOR_THRESHOLD_ROI_FRACTION,
+        "color_max_image_age_sec": COLOR_MAX_IMAGE_AGE_SEC,
+        "color_min_confidence": COLOR_MIN_CONFIDENCE,
+        "color_non_green_index_max": COLOR_NON_GREEN_INDEX_MAX,
+        "barcode_value": BARCODE_VALUE,
+        "barcode_topic": BARCODE_TOPIC,
+        "barcode_scan_pose": list(BARCODE_SCAN_POSE),
+        "barcode_scan_timeout_sec": BARCODE_SCAN_TIMEOUT_SEC,
+        "circle_landing_angle_deg": CIRCLE_LANDING_ANGLE_DEG,
+        "led_on_sec": LED_ON_SEC,
+        "led_off_sec": LED_OFF_SEC,
+        "led_repeat_gap_sec": LED_REPEAT_GAP_SEC,
     }
+    if EXCLUDED_CELLS:
+        plant_task_params["excluded_cells"] = EXCLUDED_CELLS
 
     return LaunchDescription([
         SetEnvironmentVariable("ROS_LOG_DIR", task_log_dir),
@@ -121,7 +126,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "use_camera",
             default_value="true",
-            description="是否启动 /camera/image_raw 相机源。",
+            description="是否启动向下/侧向双摄像头。",
         ),
         DeclareLaunchArgument(
             "height_source",
@@ -159,10 +164,48 @@ def generate_launch_description() -> LaunchDescription:
                 _launch_path("laser_array_pkg", "laser_array_ground.launch.py")
             ),
         ),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                _launch_path("visual_pkg", "camera_source.launch.py")
-            ),
+        Node(
+            package="visual_pkg",
+            executable="camera_source_node",
+            name="down_camera_source",
+            output="screen",
+            parameters=[{
+                "camera_device": DOWN_CAMERA_DEVICE,
+                "width": 640,
+                "height": 480,
+                "camera_fps": 30,
+                "publish_fps": 30.0,
+                "frame_id": "down_camera",
+                "image_topic": DOWN_IMAGE_TOPIC,
+            }],
+            condition=IfCondition(use_camera),
+        ),
+        Node(
+            package="visual_pkg",
+            executable="camera_source_node",
+            name="side_camera_source",
+            output="screen",
+            parameters=[{
+                "camera_device": SIDE_CAMERA_DEVICE,
+                "width": 640,
+                "height": 480,
+                "camera_fps": 30,
+                "publish_fps": 30.0,
+                "frame_id": "side_camera",
+                "image_topic": SIDE_IMAGE_TOPIC,
+            }],
+            condition=IfCondition(use_camera),
+        ),
+        Node(
+            package="activity_control_pkg",
+            executable="barcode_reader_node",
+            name="barcode_reader_node",
+            output="screen",
+            parameters=[{
+                "image_topic": SIDE_IMAGE_TOPIC,
+                "barcode_topic": BARCODE_TOPIC,
+                "stable_count": 3,
+            }],
             condition=IfCondition(use_camera),
         ),
         TimerAction(
@@ -183,10 +226,10 @@ def generate_launch_description() -> LaunchDescription:
             actions=[
                 Node(
                     package="activity_control_pkg",
-                    executable="fixed_waypoint_task_node",
-                    name="fixed_waypoint_task_node",
+                    executable="plant_protection_task_node",
+                    name="plant_protection_task_node",
                     output="screen",
-                    parameters=[fixed_task_params],
+                    parameters=[plant_task_params],
                 )
             ],
         ),

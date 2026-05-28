@@ -13,6 +13,7 @@ class CameraSourceNode(Node):
         super().__init__("camera_source_node")
 
         self.declare_parameter("camera_index", 0)
+        self.declare_parameter("camera_device", "")
         self.declare_parameter("width", 640)
         self.declare_parameter("height", 480)
         self.declare_parameter("camera_fps", 60)
@@ -22,6 +23,7 @@ class CameraSourceNode(Node):
         self.declare_parameter("image_topic", "/camera/image_raw")
 
         self._camera_index = int(self.get_parameter("camera_index").value)
+        self._camera_device = str(self.get_parameter("camera_device").value)
         self._width = int(self.get_parameter("width").value)
         self._height = int(self.get_parameter("height").value)
         self._camera_fps = int(self.get_parameter("camera_fps").value)
@@ -36,22 +38,27 @@ class CameraSourceNode(Node):
         self._camera_ok = self._open_camera()
         if not self._camera_ok:
             self.get_logger().error(
-                f"Failed to open camera index {self._camera_index} "
-                f"(/dev/video{self._camera_index}). Will retry."
+                f"Failed to open camera {self._camera_label()}. Will retry."
             )
 
         self._image_pub = self.create_publisher(Image, image_topic, 10)
         self._timer = self.create_timer(1.0 / max(1.0, publish_fps), self._timer_callback)
 
         self.get_logger().info(
-            f"CameraSourceNode publishing {image_topic}: camera={self._camera_index} "
+            f"CameraSourceNode publishing {image_topic}: camera={self._camera_label()} "
             f"{self._width}x{self._height}@{self._camera_fps}, publish_fps={publish_fps:.1f}"
         )
 
+    def _camera_label(self) -> str:
+        if self._camera_device:
+            return self._camera_device
+        return f"index {self._camera_index} (/dev/video{self._camera_index})"
+
     def _open_camera(self) -> bool:
-        cap = cv2.VideoCapture(self._camera_index, cv2.CAP_V4L2)
+        source = self._camera_device if self._camera_device else self._camera_index
+        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         if not cap.isOpened():
-            cap = cv2.VideoCapture(self._camera_index)
+            cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             return False
 

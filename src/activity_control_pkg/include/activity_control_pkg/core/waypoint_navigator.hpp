@@ -81,6 +81,7 @@ private:
   double default_position_tolerance_cm_;
   double default_height_tolerance_cm_;
   double default_yaw_tolerance_deg_;
+  bool log_waypoint_targets_{true};
   double current_height_cm_{0.0};
   bool has_height_{false};
   std::optional<WaypointTarget> current_target_;

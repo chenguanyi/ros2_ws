@@ -2,10 +2,29 @@
 
 本仓库是一个面向飞行任务开发的 ROS 2 工作空间，当前按“基础能力对象 + 任务节点 + 用户 launch”的方式组织。底层包只保留可复用能力，具体比赛题目和任务流程写成独立任务节点。
 
+
+
 固定航点任务是当前主要入口：
 
 ```bash
 ros2 launch my_launch fixed_waypoint.launch.py
+```
+
+G 题植保任务入口：
+
+/dev/camera_decxin 是向下摄像头，用于识别绿色/白布格
+
+/dev/camera_wdr5m 是侧向摄像头，用于识别杆塔条形码
+
+```bash
+ros2 launch my_launch plant_protection.launch.py
+```
+
+任务 launch 会自动把 ROS 日志保存到工作区的任务目录：
+
+```text
+mylog/fixed_waypoint/
+mylog/plant_protection/
 ```
 
 常用参数：
@@ -30,7 +49,7 @@ MISSION_STEPS = [
 - `pose`: `(x_cm, y_cm, z_cm, yaw_deg)`，单位分别是 cm、cm、cm、度。
 - `arm`: 机械臂动作，0 或 1。
 - `magnet`: 电磁铁动作，0 或 1。
-- `signal`: 通用 signal 输出，0 或 1。G 题中可用于控制激光撒药。
+- `signal`: 通用 signal 输出，0 或 1。
 - `hold_sec`: 到达该航点后等待多久再继续。
 
 ## 主数据流
@@ -70,17 +89,20 @@ src/activity_control_pkg/src/core/
 - `SensorCache`: 缓存 `/height`、`/height_raw`、`/laser_array/ground_height`、`/laser_array/obstacle_height`。
 - `ImageCache`: 缓存 `/camera/image_raw` 最新图像。
 
-任务节点放在 `src/activity_control_pkg/src/tasks/`，当前示例是 `fixed_waypoint_task_node`。
+任务节点放在 `src/activity_control_pkg/src/tasks/`，当前示例：
+
+- `fixed_waypoint_task_node`
+- `plant_protection_task_node`
 
 ### `my_launch`
 
 面向最终使用者的启动入口。当前保留：
 
 - `fixed_waypoint.launch.py`
+- `plant_protection.launch.py`
 
 以后不同题目可以新增不同 launch，例如：
 
-- `plant_protection.launch.py`
 - `pillar_task.launch.py`
 
 ### `visual_pkg`
@@ -127,9 +149,9 @@ src/my_launch/launch/plant_protection.launch.py
 
 不要把比赛题目的规则写进 PID、UART、相机源或 `WaypointNavigator`。
 
-## G 题开发建议
+## G 题植保任务
 
-后续 G 题可新增：
+当前已提供：
 
 ```text
 plant_protection_task_node.cpp
@@ -140,11 +162,12 @@ plant_protection.launch.py
 
 - 建立 400 cm x 500 cm 作业区模型。
 - 按 50 cm 网格生成待撒药格子。
-- 从 A 格开始生成覆盖路径。
-- 遇到发挥部分的 3-4 个遮挡格时，从任务参数中排除这些格。
+- 起飞后先飞到条码识别点，识别成功后用 LED 持续重复显示条码数字。
+- 从 A/21 格开始按最短覆盖路径撒药。
+- 遇到发挥部分的 3-4 个白/灰遮挡格时，向下视觉自动跳过明显非绿色格。
 - 飞到每个撒药点时调用 `flight_.goTo(...)`。
-- 到点后用 `aux_.setSignal(true)` 控制激光闪烁或撒药动作，再关闭。
-- 条码识别放在任务内部或任务专属视觉辅助类中。
+- 到点后用 `aux_.setMagnet(true)` 控制向下激光闪烁，再关闭。
+- `signal` 位复用为 LED，条码识别结果来自 `/plant_protection/barcode_value`。
 - 条码数字转换为半径后，任务自己计算圆周降落点，再调用 `flight_.goTo(...)`。
 
 `WaypointNavigator` 不知道 G 题是什么，它只负责飞到指定点。

@@ -23,6 +23,7 @@ WaypointNavigator::WaypointNavigator(rclcpp::Node & node)
   default_position_tolerance_cm_ = node_.declare_parameter("position_tolerance_cm", 8.0);
   default_height_tolerance_cm_ = node_.declare_parameter("height_tolerance_cm", 6.0);
   default_yaw_tolerance_deg_ = node_.declare_parameter("yaw_tolerance_deg", 5.0);
+  log_waypoint_targets_ = node_.declare_parameter("log_waypoint_targets", true);
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_.get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -250,13 +251,23 @@ void WaypointNavigator::publishTarget(const WaypointTarget & target, const Waypo
     publishActiveController(2);
   }
 
-  RCLCPP_INFO(
-    node_.get_logger(),
-    "Published waypoint target: x=%.1fcm y=%.1fcm z=%.1fcm yaw=%.1fdeg",
-    target.x_cm,
-    target.y_cm,
-    target.z_cm,
-    target.yaw_deg);
+  if (log_waypoint_targets_) {
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Published waypoint target: x=%.1fcm y=%.1fcm z=%.1fcm yaw=%.1fdeg",
+      target.x_cm,
+      target.y_cm,
+      target.z_cm,
+      target.yaw_deg);
+  } else {
+    RCLCPP_DEBUG(
+      node_.get_logger(),
+      "Published waypoint target: x=%.1fcm y=%.1fcm z=%.1fcm yaw=%.1fdeg",
+      target.x_cm,
+      target.y_cm,
+      target.z_cm,
+      target.yaw_deg);
+  }
 }
 
 }  // namespace activity_control_pkg

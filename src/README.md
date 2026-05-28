@@ -10,6 +10,14 @@
 ros2 launch my_launch fixed_waypoint.launch.py
 ```
 
+G 题植保任务：
+
+```bash
+ros2 launch my_launch plant_protection.launch.py
+```
+
+任务日志会保存到工作区 `mylog/<任务名>/` 目录。
+
 相机源单独启动：
 
 ```bash
@@ -38,16 +46,17 @@ ros2 launch visual_pkg camera_source.launch.py
 任务节点放在 `src/tasks/`。当前示例：
 
 - `fixed_waypoint_task_node`
+- `plant_protection_task_node`
 
 ### `my_launch`
 
 面向最终使用者的启动入口。当前保留：
 
 - `fixed_waypoint.launch.py`
+- `plant_protection.launch.py`
 
 以后不同题目新增不同 launch，例如：
 
-- `plant_protection.launch.py`
 - `pillar_task.launch.py`
 
 ### `visual_pkg`
