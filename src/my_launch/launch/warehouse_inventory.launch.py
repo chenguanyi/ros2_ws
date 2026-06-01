@@ -14,41 +14,19 @@ from launch_ros.substitutions import FindPackageShare
 
 
 # =============================================================================
-# G 题植保任务参数面板
-# 平时调试只改这里：
-# magnet 位复用为向下激光：1 发射，0 关闭。
-# signal 位复用为 LED：1 亮，0 灭。
-# home_pose = (x_cm, y_cm, z_cm, yaw_deg)
+# D task warehouse inventory.
+# Fixed geometry and fixed right-side camera fine-control mapping live in code.
+# Only switch mission_mode between inventory and target:
+#   inventory: scan all 24 QR codes and update latest_success.json on success.
+#   target: preflight QR -> latest_success.json lookup -> direct safe route.
 # =============================================================================
 
-CRUISE_HEIGHT_CM = 150.0
-HOME_POSE = (0.0, 0.0, 10.0, 0.0)
-CELL_SIZE_CM = 50.0
-LASER_ON_SEC = 0.4
-LASER_OFF_SEC = 1.0
-LASER_PULSE_COUNT = 2
-EXCLUDED_CELLS = []
-BARCODE_VALUE = 0
-BARCODE_TOPIC = "/plant_protection/barcode_value"
-BARCODE_CANDIDATE_TOPIC = "/plant_protection/barcode_candidate"
-BARCODE_OVERLAY_TOPIC = "/side_camera/barcode_overlay"
-BARCODE_SCAN_POSE = (120.0, 0.0, 120.0, 0.0)
-BARCODE_SCAN_TIMEOUT_SEC = 5.0
-CIRCLE_LANDING_ANGLE_DEG = 0.0
-
-DOWN_CAMERA_DEVICE = "/dev/camera_decxin"
-SIDE_CAMERA_DEVICE = "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0"
-DOWN_IMAGE_TOPIC = "/down_camera/image_raw"
-SIDE_IMAGE_TOPIC = "/side_camera/image_raw"
-COLOR_DECISION_ROI_FRACTION = 0.35
-COLOR_THRESHOLD_ROI_FRACTION = 0.80
-COLOR_MAX_IMAGE_AGE_SEC = 0.5
-COLOR_MIN_CONFIDENCE = 0.08
-COLOR_NON_GREEN_INDEX_MAX = 0.10
-
-LED_ON_SEC = 0.25
-LED_OFF_SEC = 0.25
-LED_REPEAT_GAP_SEC = 2.0
+SIDE_CAMERA_DEVICE = "/dev/camera_icspring"
+SIDE_IMAGE_TOPIC = "/warehouse_inventory/side_camera/image_raw"
+BARCODE_TOPIC = "/warehouse_inventory/barcode_value"
+BARCODE_CANDIDATE_TOPIC = "/warehouse_inventory/barcode_candidate"
+BARCODE_OVERLAY_TOPIC = "/warehouse_inventory/barcode_overlay"
+FINE_DATA_TOPIC = "/fine_data"
 
 
 def _workspace_root() -> str:
@@ -76,14 +54,17 @@ def _launch_path(package_name: str, filename: str) -> str:
 
 
 def generate_launch_description() -> LaunchDescription:
+    mission_mode = LaunchConfiguration("mission_mode")
     use_rviz = LaunchConfiguration("use_rviz")
     use_camera = LaunchConfiguration("use_camera")
+    use_viewer = LaunchConfiguration("use_viewer")
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
-    task_log_dir = _task_log_dir("plant_protection")
+    task_log_dir = _task_log_dir("warehouse_inventory")
 
-    plant_task_params = {
+    task_params = {
+        "mission_mode": mission_mode,
         "map_frame": "map",
         "laser_link_frame": "laser_link",
         "output_topic": "/target_position",
@@ -93,58 +74,47 @@ def generate_launch_description() -> LaunchDescription:
         "yaw_tolerance_deg": 3.0,
         "log_waypoint_targets": False,
         "timer_period_sec": 0.05,
-        "cruise_height_cm": CRUISE_HEIGHT_CM,
-        "home_pose": list(HOME_POSE),
-        "cell_size_cm": CELL_SIZE_CM,
-        "laser_on_sec": LASER_ON_SEC,
-        "laser_off_sec": LASER_OFF_SEC,
-        "laser_pulse_count": LASER_PULSE_COUNT,
-        "image_topic": DOWN_IMAGE_TOPIC,
-        "color_decision_roi_fraction": COLOR_DECISION_ROI_FRACTION,
-        "color_threshold_roi_fraction": COLOR_THRESHOLD_ROI_FRACTION,
-        "color_max_image_age_sec": COLOR_MAX_IMAGE_AGE_SEC,
-        "color_min_confidence": COLOR_MIN_CONFIDENCE,
-        "color_non_green_index_max": COLOR_NON_GREEN_INDEX_MAX,
-        "barcode_value": BARCODE_VALUE,
         "barcode_topic": BARCODE_TOPIC,
-        "barcode_candidate_topic": BARCODE_CANDIDATE_TOPIC,
-        "barcode_scan_pose": list(BARCODE_SCAN_POSE),
-        "barcode_scan_timeout_sec": BARCODE_SCAN_TIMEOUT_SEC,
-        "circle_landing_angle_deg": CIRCLE_LANDING_ANGLE_DEG,
-        "led_on_sec": LED_ON_SEC,
-        "led_off_sec": LED_OFF_SEC,
-        "led_repeat_gap_sec": LED_REPEAT_GAP_SEC,
+        "fine_data_topic": FINE_DATA_TOPIC,
     }
-    if EXCLUDED_CELLS:
-        plant_task_params["excluded_cells"] = EXCLUDED_CELLS
 
     return LaunchDescription([
         SetEnvironmentVariable("ROS_LOG_DIR", task_log_dir),
         LogInfo(msg=f"Task log directory: {task_log_dir}"),
         DeclareLaunchArgument(
+            "mission_mode",
+            default_value="inventory",
+            description="D task mode: inventory or target.",
+        ),
+        DeclareLaunchArgument(
             "use_rviz",
             default_value="false",
-            description="是否启动 RViz。",
+            description="Start RViz.",
         ),
         DeclareLaunchArgument(
             "use_camera",
             default_value="true",
-            description="是否启动向下/侧向双摄像头。",
+            description="Start right-side camera and QR reader.",
+        ),
+        DeclareLaunchArgument(
+            "use_viewer",
+            default_value="false",
+            description="Start OpenCV side-camera debug viewer.",
         ),
         DeclareLaunchArgument(
             "height_source",
             default_value="laser_ground",
-            description="任务高度来源：laser_ground 或 serial_raw。",
+            description="Mission height source: laser_ground or serial_raw.",
         ),
         DeclareLaunchArgument(
             "laser_height_topic",
             default_value="/laser_array/ground_height",
-            description="height_source=laser_ground 时使用的高度话题。",
+            description="Height topic used when height_source=laser_ground.",
         ),
         DeclareLaunchArgument(
             "forward_height_0x05",
             default_value="true",
-            description="是否把当前任务高度继续通过 0x05 帧转发给下游。",
+            description="Forward selected mission height through frame 0x05.",
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -170,23 +140,7 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="visual_pkg",
             executable="camera_source_node",
-            name="down_camera_source",
-            output="screen",
-            parameters=[{
-                "camera_device": DOWN_CAMERA_DEVICE,
-                "width": 640,
-                "height": 480,
-                "camera_fps": 30,
-                "publish_fps": 30.0,
-                "frame_id": "down_camera",
-                "image_topic": DOWN_IMAGE_TOPIC,
-            }],
-            condition=IfCondition(use_camera),
-        ),
-        Node(
-            package="visual_pkg",
-            executable="camera_source_node",
-            name="side_camera_source",
+            name="warehouse_side_camera_source",
             output="screen",
             parameters=[{
                 "camera_device": SIDE_CAMERA_DEVICE,
@@ -194,7 +148,7 @@ def generate_launch_description() -> LaunchDescription:
                 "height": 480,
                 "camera_fps": 30,
                 "publish_fps": 30.0,
-                "frame_id": "side_camera",
+                "frame_id": "warehouse_side_camera",
                 "image_topic": SIDE_IMAGE_TOPIC,
             }],
             condition=IfCondition(use_camera),
@@ -202,31 +156,33 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="activity_control_pkg",
             executable="barcode_reader_node",
-            name="barcode_reader_node",
+            name="warehouse_qr_reader_node",
             output="screen",
             parameters=[{
                 "image_topic": SIDE_IMAGE_TOPIC,
                 "barcode_topic": BARCODE_TOPIC,
                 "candidate_topic": BARCODE_CANDIDATE_TOPIC,
                 "overlay_topic": BARCODE_OVERLAY_TOPIC,
-                "stable_count": 3,
-                "republish_period_sec": 1.0,
+                "fine_data_topic": FINE_DATA_TOPIC,
+                "publish_fine_data": True,
+                "stable_count": 2,
+                "republish_period_sec": 0.2,
             }],
             condition=IfCondition(use_camera),
         ),
         Node(
             package="activity_control_pkg",
             executable="side_camera_viewer_node",
-            name="side_camera_viewer_node",
+            name="warehouse_side_camera_viewer_node",
             output="screen",
             parameters=[{
                 "image_topic": BARCODE_OVERLAY_TOPIC,
                 "candidate_topic": BARCODE_CANDIDATE_TOPIC,
                 "barcode_topic": BARCODE_TOPIC,
-                "window_name": "Side camera barcode",
+                "window_name": "Warehouse side camera",
                 "display_width": 960,
             }],
-            condition=IfCondition(use_camera),
+            condition=IfCondition(use_viewer),
         ),
         TimerAction(
             period=12.0,
@@ -238,6 +194,17 @@ def generate_launch_description() -> LaunchDescription:
                             "position_pid_controller.launch.py",
                         )
                     ),
+                    launch_arguments={
+                        "visual_mapping_mode": "right_side_camera",
+                        "visual_kp_x": "0.08",
+                        "visual_kd_x": "0.01",
+                        "visual_kp_z": "0.06",
+                        "visual_kd_z": "0.01",
+                        "visual_pixel_deadzone": "5.0",
+                        "visual_max_xy_velocity": "20.0",
+                        "visual_max_z_velocity": "18.0",
+                        "visual_data_timeout_sec": "0.5",
+                    }.items(),
                 )
             ],
         ),
@@ -246,10 +213,10 @@ def generate_launch_description() -> LaunchDescription:
             actions=[
                 Node(
                     package="activity_control_pkg",
-                    executable="plant_protection_task_node",
-                    name="plant_protection_task_node",
+                    executable="warehouse_inventory_task_node",
+                    name="warehouse_inventory_task_node",
                     output="screen",
-                    parameters=[plant_task_params],
+                    parameters=[task_params],
                 )
             ],
         ),

@@ -25,6 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'analyze_plant_tuning = my_launch.analyze_plant_tuning:main',
         ],
     },
 )

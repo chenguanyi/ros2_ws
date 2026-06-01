@@ -20,11 +20,27 @@ G 题植保任务入口：
 ros2 launch my_launch plant_protection.launch.py
 ```
 
+D 题立体货架盘点任务入口：
+
+```bash
+ros2 launch my_launch warehouse_inventory.launch.py mission_mode:=inventory
+ros2 launch my_launch warehouse_inventory.launch.py mission_mode:=target
+```
+
+`inventory` 会遍历 24 个货架二维码，完整成功后更新：
+
+```text
+mylog/warehouse_inventory/latest_success.json
+```
+
+`target` 会先用右侧摄像头扫描抽取二维码，再读取最近一次成功盘点日志，直接飞往目标货物；没有成功日志或日志中没有目标编号时不会起飞。
+
 任务 launch 会自动把 ROS 日志保存到工作区的任务目录：
 
 ```text
 mylog/fixed_waypoint/
 mylog/plant_protection/
+mylog/warehouse_inventory/
 ```
 
 常用参数：
@@ -100,6 +116,7 @@ src/activity_control_pkg/src/core/
 
 - `fixed_waypoint.launch.py`
 - `plant_protection.launch.py`
+- `warehouse_inventory.launch.py`
 
 以后不同题目可以新增不同 launch，例如：
 
@@ -171,6 +188,25 @@ plant_protection.launch.py
 - 条码数字转换为半径后，任务自己计算圆周降落点，再调用 `flight_.goTo(...)`。
 
 `WaypointNavigator` 不知道 G 题是什么，它只负责飞到指定点。
+
+## D 题立体货架盘点任务
+
+当前已提供：
+
+```text
+warehouse_inventory_task_node.cpp
+warehouse_inventory.launch.py
+```
+
+任务内部负责：
+
+- 固定建立 400 cm x 500 cm 场地、2 个货架、A/B/C/D 面和 24 个二维码扫描点。
+- 右侧摄像头固定用于二维码识别和精调，二维码中心 `image_dx` 控制机体 `x`，`image_dy` 控制机体 `z`，机体 `y` 靠离板 60 cm 的航点保持。
+- 面间切换使用安全路线，扫描点和绕行点离板至少 60 cm。
+- `inventory` 模式穷举面顺序与蛇形扫描变体，选最短安全路线后遍历 24 个点。
+- 每识别一个二维码后，水平激光点亮约 0.5 秒，LED 亮约 1 秒，并发布盘点结果。
+- 完整成功后保存 `inventory_<timestamp>.json` 并更新 `latest_success.json`。
+- `target` 模式上电扫描抽取二维码，读取 `latest_success.json`，直接飞到目标坐标；缺日志或缺编号时停止等待，不起飞。
 
 ## 工程边界
 

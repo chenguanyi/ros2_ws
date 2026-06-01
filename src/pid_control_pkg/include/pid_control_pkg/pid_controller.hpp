@@ -2,6 +2,7 @@
 #define PID_CONTROL_PKG__PID_CONTROLLER_HPP_
 
 #include <cmath>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -75,6 +76,11 @@ private:
   void calculateErrors();
   double normalizeAngleDeg(double angle_deg) const;
   std_msgs::msg::Float32MultiArray processPID(double dt);
+  void openControlCsv();
+  void logControlSample(
+    const rclcpp::Time & stamp,
+    double dt,
+    const std_msgs::msg::Float32MultiArray & cmd_vel);
 
   inline double meterToCm(double meter) const { return meter * 100.0; }
   inline double radToDeg(double rad) const { return rad * 180.0 / M_PI; }
@@ -94,6 +100,7 @@ private:
   PIDController pid_xy_speed_;
   PIDController pid_visual_x_;
   PIDController pid_visual_y_;
+  PIDController pid_visual_z_;
 
   double target_x_cm_;
   double target_y_cm_;
@@ -121,11 +128,16 @@ private:
   double visual_kp_y_;
   double visual_ki_y_;
   double visual_kd_y_;
+  double visual_kp_z_;
+  double visual_ki_z_;
+  double visual_kd_z_;
   double visual_pixel_deadzone_;
   double visual_max_xy_velocity_;
+  double visual_max_z_velocity_;
   double visual_data_timeout_sec_;
   double visual_target_offset_x_px_;
   double visual_target_offset_y_px_;
+  std::string visual_mapping_mode_;
 
   double distance_xy_cm_;
   double error_x_cm_;
@@ -138,6 +150,9 @@ private:
   double visual_error_x_px_;
   double visual_error_y_px_;
   rclcpp::Time last_visual_data_time_;
+
+  std::ofstream control_csv_;
+  bool control_csv_ready_;
 
   rclcpp::Time last_update_time_;
 };

@@ -15,7 +15,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(angles REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZBAR REQUIRED zbar)
 
@@ -73,6 +73,20 @@ else()
   target_compile_options(plant_protection_task_node PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(warehouse_inventory_task_node
+  src/tasks/warehouse_inventory_task_node.cpp
+)
+target_link_libraries(warehouse_inventory_task_node mission_core)
+ament_target_dependencies(warehouse_inventory_task_node
+  rclcpp
+  std_msgs
+)
+if(MSVC)
+  target_compile_options(warehouse_inventory_task_node PRIVATE /W4)
+else()
+  target_compile_options(warehouse_inventory_task_node PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(barcode_reader_node
   src/tasks/barcode_reader_node.cpp
 )
@@ -95,6 +109,24 @@ else()
   target_compile_options(barcode_reader_node PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(side_camera_viewer_node
+  src/tasks/side_camera_viewer_node.cpp
+)
+target_link_libraries(side_camera_viewer_node
+  ${OpenCV_LIBS}
+)
+ament_target_dependencies(side_camera_viewer_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  cv_bridge
+)
+if(MSVC)
+  target_compile_options(side_camera_viewer_node PRIVATE /W4)
+else()
+  target_compile_options(side_camera_viewer_node PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 install(TARGETS mission_core
   EXPORT export_mission_core
   ARCHIVE DESTINATION lib
@@ -105,7 +137,9 @@ install(TARGETS mission_core
 install(TARGETS
   fixed_waypoint_task_node
   plant_protection_task_node
+  warehouse_inventory_task_node
   barcode_reader_node
+  side_camera_viewer_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

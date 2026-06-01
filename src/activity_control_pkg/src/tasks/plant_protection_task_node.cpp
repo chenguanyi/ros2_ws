@@ -7,8 +7,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -231,6 +236,17 @@ ColorSplit splitColorHistogram(const ColorRoiStats & stats)
   return best_split;
 }
 
+double normalizeAngleDeg(double angle_deg)
+{
+  while (angle_deg > 180.0) {
+    angle_deg -= 360.0;
+  }
+  while (angle_deg < -180.0) {
+    angle_deg += 360.0;
+  }
+  return angle_deg;
+}
+
 }  // namespace
 
 enum class MissionPhase
@@ -253,6 +269,33 @@ enum class LandingStep
   TRAVEL_AT_CRUISE,
   DESCEND,
 };
+
+const char * phaseName(MissionPhase phase)
+{
+  switch (phase) {
+    case MissionPhase::WAIT_STATE:
+      return "WAIT_STATE";
+    case MissionPhase::TAKEOFF:
+      return "TAKEOFF";
+    case MissionPhase::GO_TO_BARCODE_SCAN:
+      return "GO_TO_BARCODE_SCAN";
+    case MissionPhase::SCAN_BARCODE:
+      return "SCAN_BARCODE";
+    case MissionPhase::GO_TO_A:
+      return "GO_TO_A";
+    case MissionPhase::SPRAY_CELL:
+      return "SPRAY_CELL";
+    case MissionPhase::NEXT_CELL:
+      return "NEXT_CELL";
+    case MissionPhase::DISPLAY_BARCODE:
+      return "DISPLAY_BARCODE";
+    case MissionPhase::RETURN_OR_CIRCLE_LAND:
+      return "RETURN_OR_CIRCLE_LAND";
+    case MissionPhase::COMPLETE:
+      return "COMPLETE";
+  }
+  return "UNKNOWN";
+}
 
 struct PlantCell
 {
@@ -286,9 +329,11 @@ public:
     barcode_value_ = declare_parameter("barcode_value", 0);
     barcode_topic_ =
       declare_parameter("barcode_topic", std::string("/plant_protection/barcode_value"));
+    barcode_candidate_topic_ =
+      declare_parameter("barcode_candidate_topic", std::string("/plant_protection/barcode_candidate"));
     barcode_scan_pose_ =
       declare_parameter("barcode_scan_pose", std::vector<double>{0.0, 120.0, 105.0, 0.0});
-    barcode_scan_timeout_sec_ = declare_parameter("barcode_scan_timeout_sec", 10.0);
+    barcode_scan_timeout_sec_ = declare_parameter("barcode_scan_timeout_sec", 5.0);
     circle_landing_angle_deg_ = declare_parameter("circle_landing_angle_deg", 0.0);
     led_on_sec_ = declare_parameter("led_on_sec", 0.25);
     led_off_sec_ = declare_parameter("led_off_sec", 0.25);
@@ -296,6 +341,7 @@ public:
 
     validateParameters();
     loadCells();
+    openEventCsv();
 
     mission_complete_pub_ =
       create_publisher<std_msgs::msg::Empty>("/mission_complete", rclcpp::QoS(10).reliable());
@@ -304,6 +350,10 @@ public:
       barcode_topic_,
       barcode_qos,
       std::bind(&PlantProtectionTaskNode::barcodeCallback, this, std::placeholders::_1));
+    barcode_candidate_sub_ = create_subscription<std_msgs::msg::Int32>(
+      barcode_candidate_topic_,
+      barcode_qos,
+      std::bind(&PlantProtectionTaskNode::barcodeCandidateCallback, this, std::placeholders::_1));
     monitor_timer_ = create_wall_timer(
       std::chrono::duration<double>(timer_period_sec_),
       std::bind(&PlantProtectionTaskNode::timerCallback, this));
@@ -364,14 +414,134 @@ private:
     }
   }
 
+  std::string sanitizeCsvField(std::string value) const
+  {
+    for (char & ch : value) {
+      if (ch == ',' || ch == '\n' || ch == '\r') {
+        ch = ' ';
+      }
+    }
+    return value;
+  }
+
+  void openEventCsv()
+  {
+    const char * ros_log_dir = std::getenv("ROS_LOG_DIR");
+    const std::string log_dir =
+      (ros_log_dir != nullptr && ros_log_dir[0] != '\0') ? ros_log_dir : ".";
+
+    std::ostringstream path;
+    path << log_dir << "/plant_events_" << now().nanoseconds() << ".csv";
+
+    event_csv_.open(path.str(), std::ios::out | std::ios::trunc);
+    if (!event_csv_.is_open()) {
+      RCLCPP_WARN(get_logger(), "Failed to open plant event CSV log: %s", path.str().c_str());
+      event_csv_ready_ = false;
+      return;
+    }
+
+    event_csv_ready_ = true;
+    event_csv_ <<
+      "time_sec,event,phase,cell_id,"
+      "target_x_cm,target_y_cm,target_z_cm,target_yaw_deg,"
+      "current_x_cm,current_y_cm,current_z_cm,current_yaw_deg,"
+      "error_x_cm,error_y_cm,error_xy_cm,error_z_cm,error_yaw_deg,"
+      "note\n";
+    event_csv_.flush();
+    RCLCPP_INFO(get_logger(), "Plant event CSV log: %s", path.str().c_str());
+  }
+
+  void logEventCsv(const std::string & event, int cell_id = 0, const std::string & note = "")
+  {
+    if (!event_csv_ready_) {
+      return;
+    }
+
+    const auto target = flight_.currentTarget();
+    std::optional<double> current_x;
+    std::optional<double> current_y;
+    std::optional<double> current_z;
+    std::optional<double> current_yaw;
+    double x_cm = 0.0;
+    double y_cm = 0.0;
+    double z_cm = 0.0;
+    double yaw_deg = 0.0;
+    if (flight_.getCurrentPose(x_cm, y_cm, z_cm, yaw_deg)) {
+      current_x = x_cm;
+      current_y = y_cm;
+      current_z = z_cm;
+      current_yaw = yaw_deg;
+    }
+
+    std::optional<double> error_x;
+    std::optional<double> error_y;
+    std::optional<double> error_xy;
+    std::optional<double> error_z;
+    std::optional<double> error_yaw;
+    if (target && current_x && current_y && current_z && current_yaw) {
+      error_x = target->x_cm - *current_x;
+      error_y = target->y_cm - *current_y;
+      error_xy = std::hypot(*error_x, *error_y);
+      error_z = target->z_cm - *current_z;
+      error_yaw = normalizeAngleDeg(target->yaw_deg - *current_yaw);
+    }
+
+    auto writeOptional = [this](const std::optional<double> & value) {
+        if (value) {
+          event_csv_ << *value;
+        }
+      };
+
+    event_csv_ << std::fixed << std::setprecision(6)
+               << now().seconds() << ','
+               << sanitizeCsvField(event) << ','
+               << phaseName(phase_) << ','
+               << cell_id << ',';
+    writeOptional(target ? std::optional<double>(target->x_cm) : std::nullopt);
+    event_csv_ << ',';
+    writeOptional(target ? std::optional<double>(target->y_cm) : std::nullopt);
+    event_csv_ << ',';
+    writeOptional(target ? std::optional<double>(target->z_cm) : std::nullopt);
+    event_csv_ << ',';
+    writeOptional(target ? std::optional<double>(target->yaw_deg) : std::nullopt);
+    event_csv_ << ',';
+    writeOptional(current_x);
+    event_csv_ << ',';
+    writeOptional(current_y);
+    event_csv_ << ',';
+    writeOptional(current_z);
+    event_csv_ << ',';
+    writeOptional(current_yaw);
+    event_csv_ << ',';
+    writeOptional(error_x);
+    event_csv_ << ',';
+    writeOptional(error_y);
+    event_csv_ << ',';
+    writeOptional(error_xy);
+    event_csv_ << ',';
+    writeOptional(error_z);
+    event_csv_ << ',';
+    writeOptional(error_yaw);
+    event_csv_ << ','
+               << sanitizeCsvField(note)
+               << '\n';
+    event_csv_.flush();
+  }
+
   WaypointTarget makeTarget(double x_cells, double y_cells) const
   {
+    const auto rotated = rotateLegacyPoint(x_cells, y_cells);
     return WaypointTarget{
-      home_pose_[0] + x_cells * cell_size_cm_,
-      home_pose_[1] + y_cells * cell_size_cm_,
+      home_pose_[0] + rotated[0] * cell_size_cm_,
+      home_pose_[1] + rotated[1] * cell_size_cm_,
       cruise_height_cm_,
       home_pose_[3],
     };
+  }
+
+  std::array<double, 2> rotateLegacyPoint(double x_cells, double y_cells) const
+  {
+    return {y_cells, -x_cells};
   }
 
   std::unordered_map<int, WaypointTarget> buildCellMap() const
@@ -457,6 +627,11 @@ private:
     return WaypointTarget{home_pose_[0], home_pose_[1], cruise_height_cm_, home_pose_[3]};
   }
 
+  WaypointTarget homeAtBarcodeScanHeight() const
+  {
+    return WaypointTarget{home_pose_[0], home_pose_[1], barcode_scan_pose_[2], home_pose_[3]};
+  }
+
   WaypointTarget barcodeScanTarget() const
   {
     return WaypointTarget{
@@ -488,14 +663,19 @@ private:
     current_cell_index_ = 0;
     sprayed_cells_ = 0;
     laser_cells_ = 0;
-    barcode_detected_ = barcode_value_ > 0;
+    barcode_detected_ = false;
     barcode_scan_started_ = false;
     barcode_scan_complete_ = false;
     led_display_active_ = false;
     aux_.setAll(0, 0, 0);
-    flight_.goTo(homeAtCruise());
+    const auto target = homeAtBarcodeScanHeight();
+    flight_.goTo(target);
     phase_ = MissionPhase::TAKEOFF;
-    RCLCPP_INFO(get_logger(), "Mission started: takeoff to %.1fcm.", cruise_height_cm_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Mission started: takeoff in place to barcode scan height %.1fcm.",
+      target.z_cm);
+    logEventCsv("takeoff_in_place", 0, "start_task");
   }
 
   void startBarcodeScanTravel()
@@ -511,6 +691,7 @@ private:
       target.y_cm,
       target.z_cm,
       target.yaw_deg);
+    logEventCsv("go_to_barcode_scan", 0, "scan_pose");
   }
 
   void startBarcodeScan()
@@ -518,11 +699,14 @@ private:
     aux_.setMagnet(false);
     barcode_scan_mark_ = now();
     barcode_scan_started_ = true;
+    barcode_candidate_seen_ = false;
+    barcode_candidate_value_ = 0;
     phase_ = MissionPhase::SCAN_BARCODE;
     RCLCPP_INFO(
       get_logger(),
       "Barcode scan started. timeout=%.1fs.",
       barcode_scan_timeout_sec_);
+    logEventCsv("barcode_scan_start", 0, "waiting_for_confirmed_barcode");
   }
 
   void processBarcodeScan()
@@ -530,6 +714,7 @@ private:
     aux_.setMagnet(false);
     if (barcode_detected_ && barcode_value_ > 0) {
       barcode_scan_complete_ = true;
+      logEventCsv("barcode_scan_success", 0, "barcode=" + std::to_string(barcode_value_));
       startBarcodeDisplay();
       startGoToA();
       return;
@@ -539,13 +724,55 @@ private:
       return;
     }
 
+    barcode_scan_complete_ = true;
+    if (barcode_candidate_seen_ && barcode_candidate_value_ > 0) {
+      barcode_value_ = barcode_candidate_value_;
+      barcode_detected_ = true;
+      RCLCPP_WARN(
+        get_logger(),
+        "Barcode scan reached %.1fs with only single-frame candidate. Using barcode=%d.",
+        barcode_scan_timeout_sec_,
+        barcode_value_);
+      logEventCsv("barcode_scan_candidate_used", 0, "barcode=" + std::to_string(barcode_value_));
+      startBarcodeDisplay();
+      startGoToA();
+      return;
+    }
+
     barcode_value_ = 0;
     barcode_detected_ = false;
-    barcode_scan_complete_ = true;
     RCLCPP_WARN(
       get_logger(),
       "Barcode scan timed out after %.1fs. Continuing spray mission with barcode=0.",
       barcode_scan_timeout_sec_);
+    logEventCsv("barcode_scan_timeout", 0, "barcode=0");
+    startGoToA();
+  }
+
+  bool canAcceptBarcodeNow() const
+  {
+    return !barcode_scan_complete_ &&
+           (phase_ == MissionPhase::TAKEOFF ||
+            phase_ == MissionPhase::GO_TO_BARCODE_SCAN ||
+            phase_ == MissionPhase::SCAN_BARCODE);
+  }
+
+  void acceptBarcodeValue(int value)
+  {
+    barcode_value_ = value;
+    barcode_detected_ = true;
+    barcode_scan_complete_ = true;
+    if (!barcode_scan_started_) {
+      barcode_scan_started_ = true;
+      barcode_scan_mark_ = now();
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "Accepted barcode value before stop-and-scan: %d. Continuing to A start cell.",
+      barcode_value_);
+    logEventCsv("barcode_scan_success", 0, "barcode=" + std::to_string(barcode_value_));
+    startBarcodeDisplay();
     startGoToA();
   }
 
@@ -559,6 +786,7 @@ private:
     flight_.goTo(cells_.front().target);
     phase_ = MissionPhase::GO_TO_A;
     RCLCPP_INFO(get_logger(), "Going to A start cell: %d.", cells_.front().id);
+    logEventCsv("go_to_start_cell", cells_.front().id, "after_barcode_scan");
   }
 
   void startNextCell()
@@ -571,6 +799,7 @@ private:
         get_logger(),
         "Skipping excluded cell %d.",
         cells_[current_cell_index_].id);
+      logEventCsv("cell_excluded", cells_[current_cell_index_].id, "configured_excluded");
       ++current_cell_index_;
     }
 
@@ -583,6 +812,7 @@ private:
     flight_.goTo(cell.target);
     phase_ = MissionPhase::SPRAY_CELL;
     RCLCPP_DEBUG(get_logger(), "Going to cell %d (%zu/%zu).", cell.id, current_cell_index_ + 1, cells_.size());
+    logEventCsv("go_to_cell", cell.id, "route_index=" + std::to_string(current_cell_index_ + 1));
   }
 
   void resetSprayState()
@@ -746,12 +976,17 @@ private:
       cell.id,
       laser_pulses_started_,
       laser_pulse_count_);
+    logEventCsv(
+      "laser_on",
+      cell.id,
+      "pulse=" + std::to_string(laser_pulses_started_) + "/" + std::to_string(laser_pulse_count_));
   }
 
   void finishCurrentCell(const PlantCell & cell, bool laser_fired)
   {
     aux_.setMagnet(false);
     recordCellProgress(cell.id, laser_fired);
+    logEventCsv("cell_finished", cell.id, laser_fired ? "laser_fired=1" : "laser_fired=0");
     ++current_cell_index_;
     phase_ = MissionPhase::NEXT_CELL;
     resetSprayState();
@@ -770,9 +1005,13 @@ private:
     }
 
     const auto & cell = cells_[current_cell_index_];
+    if (!spray_decision_made_) {
+      logEventCsv("cell_reached", cell.id, "within_tolerance");
+    }
     if (cell.excluded) {
       aux_.setMagnet(false);
       RCLCPP_DEBUG(get_logger(), "Skipping excluded cell %d.", cell.id);
+      logEventCsv("cell_excluded", cell.id, "reached_excluded");
       ++current_cell_index_;
       phase_ = MissionPhase::NEXT_CELL;
       return;
@@ -789,6 +1028,13 @@ private:
         decision.center_index,
         decision.threshold,
         decision.confidence);
+      std::ostringstream note;
+      note << decision.reason
+           << " center=" << std::fixed << std::setprecision(3) << decision.center_index
+           << " threshold=" << decision.threshold
+           << " confidence=" << decision.confidence
+           << " green=" << (decision.green ? 1 : 0);
+      logEventCsv("color_decision", cell.id, note.str());
 
       if (!decision.green) {
         finishCurrentCell(cell, false);
@@ -800,6 +1046,7 @@ private:
           get_logger(),
           "Dry-run spray skipped at cell %d because laser timing disables pulses.",
           cell.id);
+        logEventCsv("laser_skipped", cell.id, "laser_timing_disabled");
         finishCurrentCell(cell, false);
         return;
       }
@@ -823,6 +1070,10 @@ private:
         cell.id,
         laser_pulses_completed_,
         laser_pulse_count_);
+      logEventCsv(
+        "laser_off",
+        cell.id,
+        "pulse=" + std::to_string(laser_pulses_completed_) + "/" + std::to_string(laser_pulse_count_));
       if (laser_pulses_completed_ >= laser_pulse_count_) {
         finishCurrentCell(cell, true);
         return;
@@ -954,6 +1205,11 @@ private:
       final_landing_target_.x_cm,
       final_landing_target_.y_cm,
       barcode_value_);
+    logEventCsv(
+      "return_cruise",
+      0,
+      "barcode=" + std::to_string(barcode_value_) + " landing_angle_deg=" +
+        std::to_string(circle_landing_angle_deg_));
   }
 
   void processLanding()
@@ -963,9 +1219,11 @@ private:
       if (!flight_.isReached()) {
         return;
       }
+      logEventCsv("landing_cruise_reached", 0, "descend_next");
       flight_.goTo(final_landing_target_);
       landing_step_ = LandingStep::DESCEND;
       RCLCPP_INFO(get_logger(), "Descending to final landing height %.1fcm.", final_landing_target_.z_cm);
+      logEventCsv("landing_descend", 0, "final_landing_target");
       return;
     }
 
@@ -983,10 +1241,12 @@ private:
       return;
     }
 
-    aux_.setAll(0, 0, 0);
+    aux_.setArm(false);
+    aux_.setMagnet(false);
     flight_.publishActiveController(3);
     std_msgs::msg::Empty message;
     mission_complete_pub_->publish(message);
+    logEventCsv("mission_complete", 0, "published_mission_complete");
     phase_ = MissionPhase::COMPLETE;
     RCLCPP_INFO(get_logger(), "Plant protection task completed.");
   }
@@ -996,18 +1256,33 @@ private:
     if (msg->data <= 0) {
       return;
     }
-    if (barcode_scan_complete_) {
+    if (!canAcceptBarcodeNow()) {
       return;
     }
 
-    const bool changed = barcode_value_ != msg->data || !barcode_detected_;
-    barcode_value_ = msg->data;
-    barcode_detected_ = true;
-    if (changed) {
-      RCLCPP_INFO(get_logger(), "Received stable barcode value: %d.", barcode_value_);
+    acceptBarcodeValue(msg->data);
+  }
+
+  void barcodeCandidateCallback(const std_msgs::msg::Int32::SharedPtr msg)
+  {
+    if (msg->data <= 0) {
+      return;
     }
-    if (barcode_scan_started_ && !led_display_active_) {
-      startBarcodeDisplay();
+    if (barcode_scan_complete_ ||
+      (phase_ != MissionPhase::GO_TO_BARCODE_SCAN && phase_ != MissionPhase::SCAN_BARCODE))
+    {
+      return;
+    }
+
+    const bool changed = !barcode_candidate_seen_ || barcode_candidate_value_ != msg->data;
+    barcode_candidate_seen_ = true;
+    barcode_candidate_value_ = msg->data;
+    if (changed) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Barcode single-frame candidate before stop-and-scan: %d.",
+        barcode_candidate_value_);
+      logEventCsv("barcode_candidate", 0, "barcode=" + std::to_string(barcode_candidate_value_));
     }
   }
 
@@ -1026,12 +1301,14 @@ private:
       case MissionPhase::TAKEOFF:
         aux_.setMagnet(false);
         if (flight_.isReached()) {
+          logEventCsv("takeoff_reached", 0, "start_xy_travel");
           startBarcodeScanTravel();
         }
         break;
       case MissionPhase::GO_TO_BARCODE_SCAN:
         aux_.setMagnet(false);
         if (flight_.isReached()) {
+          logEventCsv("barcode_scan_pose_reached", 0, "start_scan");
           startBarcodeScan();
         }
         break;
@@ -1043,6 +1320,7 @@ private:
         if (flight_.isReached()) {
           phase_ = MissionPhase::SPRAY_CELL;
           RCLCPP_INFO(get_logger(), "Reached A start cell.");
+          logEventCsv("reached_start_cell", cells_.empty() ? 0 : cells_.front().id, "enter_spray");
         }
         break;
       case MissionPhase::SPRAY_CELL:
@@ -1061,7 +1339,7 @@ private:
         break;
     }
 
-    if (phase_ != MissionPhase::WAIT_STATE && phase_ != MissionPhase::COMPLETE) {
+    if (phase_ != MissionPhase::WAIT_STATE && (phase_ != MissionPhase::COMPLETE || led_display_active_)) {
       processBarcodeDisplay();
     }
   }
@@ -1071,6 +1349,7 @@ private:
   ImageCache image_cache_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr mission_complete_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr barcode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr barcode_candidate_sub_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
 
   double timer_period_sec_{0.05};
@@ -1088,8 +1367,9 @@ private:
   std::vector<int64_t> configured_excluded_cells_;
   int barcode_value_{0};
   std::string barcode_topic_{"/plant_protection/barcode_value"};
+  std::string barcode_candidate_topic_{"/plant_protection/barcode_candidate"};
   std::vector<double> barcode_scan_pose_{0.0, 120.0, 105.0, 0.0};
-  double barcode_scan_timeout_sec_{10.0};
+  double barcode_scan_timeout_sec_{5.0};
   double circle_landing_angle_deg_{0.0};
   double led_on_sec_{0.25};
   double led_off_sec_{0.25};
@@ -1114,6 +1394,8 @@ private:
   bool barcode_detected_{false};
   bool barcode_scan_started_{false};
   bool barcode_scan_complete_{false};
+  bool barcode_candidate_seen_{false};
+  int barcode_candidate_value_{0};
   rclcpp::Time barcode_scan_mark_;
 
   sensor_msgs::msg::Image::ConstSharedPtr last_color_update_image_;
@@ -1128,6 +1410,9 @@ private:
   bool led_is_on_{false};
   bool led_gap_active_{false};
   rclcpp::Time led_mark_;
+
+  std::ofstream event_csv_;
+  bool event_csv_ready_{false};
 };
 
 }  // namespace tasks
