@@ -200,6 +200,8 @@ def generate_launch_description() -> LaunchDescription:
                         "visual_kd_x": "0.01",
                         "visual_kp_z": "0.06",
                         "visual_kd_z": "0.01",
+                        "visual_target_offset_x_px": "-75.0",
+                        "visual_target_offset_y_px": "20.0",
                         "visual_pixel_deadzone": "5.0",
                         "visual_max_xy_velocity": "20.0",
                         "visual_max_z_velocity": "18.0",

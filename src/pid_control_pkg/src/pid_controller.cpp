@@ -394,7 +394,7 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
     const rclcpp::Time now_time = now();
     if (hasFreshVisualData(now_time)) {
       if (visual_mapping_mode_ == "right_side_camera") {
-        vel_x_cm = pid_visual_x_.calculate(0.0, -visual_error_x_px_, dt);
+        vel_x_cm = pid_visual_x_.calculate(0.0, visual_error_x_px_, dt);
         vel_y_cm = 0.0;
         vel_z_cm = pid_visual_z_.calculate(0.0, visual_error_y_px_, dt);
         z_velocity_from_visual = true;
