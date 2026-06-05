@@ -1,1 +1,0 @@
-time_sec,dt_sec,target_x_cm,target_y_cm,target_z_cm,target_yaw_deg,current_x_cm,current_y_cm,current_z_cm,current_yaw_deg,error_x_cm,error_y_cm,error_xy_cm,error_z_cm,error_yaw_deg,cmd_x_cm_s,cmd_y_cm_s,cmd_z_cm_s,cmd_yaw_deg_s,visual_takeover

@@ -22,12 +22,14 @@
 #include <utility>
 #include <vector>
 
+#include <json/json.h>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 
 namespace activity_control_pkg
 {
@@ -60,6 +62,7 @@ constexpr int kFineDataDeadzonePx = 28;
 constexpr double kRouteXySpeedCmS = 36.0;
 constexpr double kRouteZSpeedCmS = 30.0;
 constexpr double kRouteYawSpeedDegS = 25.0;
+constexpr double kTurnYawThresholdDeg = 2.0;
 constexpr int kInventoryCount = 24;
 
 struct Point2
@@ -122,7 +125,9 @@ enum class MissionMode
 
 enum class MissionPhase
 {
+  WAIT_MODE,
   WAIT_TARGET_BARCODE,
+  WAIT_GROUND_ROUTE,
   WAIT_STATE,
   TAKEOFF,
   TRANSIT,
@@ -139,8 +144,12 @@ enum class MissionPhase
 const char * phaseName(MissionPhase phase)
 {
   switch (phase) {
+    case MissionPhase::WAIT_MODE:
+      return "WAIT_MODE";
     case MissionPhase::WAIT_TARGET_BARCODE:
       return "WAIT_TARGET_BARCODE";
+    case MissionPhase::WAIT_GROUND_ROUTE:
+      return "WAIT_GROUND_ROUTE";
     case MissionPhase::WAIT_STATE:
       return "WAIT_STATE";
     case MissionPhase::TAKEOFF:
@@ -186,6 +195,58 @@ double fieldToMapX(double x_field_cm)
 double fieldToMapY(double y_field_cm)
 {
   return y_field_cm - kTakeoffFieldYCm;
+}
+
+double correctedMapYFromOldMapX(double old_x_cm)
+{
+  constexpr double kFirstRackNearScanLineOldMapXCm = 15.0;
+  if (std::fabs(old_x_cm - kFirstRackNearScanLineOldMapXCm) < 1e-6) {
+    return 0.0;
+  }
+  return -old_x_cm;
+}
+
+Point2 oldMapToFlightMap(double old_x_cm, double old_y_cm)
+{
+  return Point2{old_y_cm, correctedMapYFromOldMapX(old_x_cm)};
+}
+
+WaypointTarget oldMapToFlightTarget(
+  double old_x_cm,
+  double old_y_cm,
+  double z_cm,
+  double yaw_deg)
+{
+  const auto point = oldMapToFlightMap(old_x_cm, old_y_cm);
+  return WaypointTarget{point.x, point.y, z_cm, yaw_deg};
+}
+
+SafetyRect oldMapRectToFlightMap(
+  double old_x_min,
+  double old_y_min,
+  double old_x_max,
+  double old_y_max)
+{
+  const std::array<Point2, 4> corners{
+    oldMapToFlightMap(old_x_min, old_y_min),
+    oldMapToFlightMap(old_x_min, old_y_max),
+    oldMapToFlightMap(old_x_max, old_y_min),
+    oldMapToFlightMap(old_x_max, old_y_max),
+  };
+
+  SafetyRect rect{
+    corners.front().x,
+    corners.front().y,
+    corners.front().x,
+    corners.front().y,
+  };
+  for (const auto & corner : corners) {
+    rect.x_min = std::min(rect.x_min, corner.x);
+    rect.y_min = std::min(rect.y_min, corner.y);
+    rect.x_max = std::max(rect.x_max, corner.x);
+    rect.y_max = std::max(rect.y_max, corner.y);
+  }
+  return rect;
 }
 
 double distance2d(const Point2 & a, const Point2 & b)
@@ -287,6 +348,11 @@ double segmentTimeCost(const WaypointTarget & start, const WaypointTarget & end)
   return std::max({xy_time, z_time, yaw_time});
 }
 
+double yawTurnTimeCost(double start_yaw_deg, double end_yaw_deg)
+{
+  return std::fabs(normalizeAngleDeg(end_yaw_deg - start_yaw_deg)) / kRouteYawSpeedDegS;
+}
+
 }  // namespace
 
 class WarehouseInventoryTaskNode : public rclcpp::Node
@@ -300,12 +366,21 @@ public:
     const auto mode_text = declare_parameter("mission_mode", std::string("inventory"));
     mission_mode_ = parseMissionMode(mode_text);
     timer_period_sec_ = declare_parameter("timer_period_sec", 0.05);
+    mode_select_grace_sec_ = declare_parameter("mode_select_grace_sec", 0.5);
     barcode_topic_ =
       declare_parameter("barcode_topic", std::string("/warehouse_inventory/barcode_value"));
     fine_data_topic_ = declare_parameter("fine_data_topic", std::string("/fine_data"));
+    ground_mode_topic_ = declare_parameter("ground_mode_topic", std::string("/d_task/mode"));
+    ground_route_topic_ = declare_parameter("ground_route_topic", std::string("/d_task/route"));
+    d_task_qr_id_topic_ = declare_parameter("d_task_qr_id_topic", std::string("/d_task/qr_id"));
+    d_task_status_topic_ =
+      declare_parameter("d_task_status_topic", std::string("/d_task/status"));
 
     if (timer_period_sec_ <= 0.0) {
       throw std::runtime_error("timer_period_sec must be > 0.");
+    }
+    if (mode_select_grace_sec_ < 0.0) {
+      throw std::runtime_error("mode_select_grace_sec must be >= 0.");
     }
 
     log_dir_ = findLogDir();
@@ -329,8 +404,12 @@ public:
       create_publisher<std_msgs::msg::String>("/warehouse_inventory/all_results", durable_qos);
     target_id_pub_ =
       create_publisher<std_msgs::msg::Int32>("/warehouse_inventory/target_id", durable_qos);
+    qr_id_pub_ =
+      create_publisher<std_msgs::msg::Int32>(d_task_qr_id_topic_, durable_qos);
     query_result_pub_ =
       create_publisher<std_msgs::msg::String>("/warehouse_inventory/query_result", durable_qos);
+    d_task_status_pub_ =
+      create_publisher<std_msgs::msg::String>(d_task_status_topic_, durable_qos);
 
     const auto barcode_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
     barcode_sub_ = create_subscription<std_msgs::msg::Int32>(
@@ -345,14 +424,24 @@ public:
       "/warehouse_inventory/query",
       rclcpp::QoS(10),
       std::bind(&WarehouseInventoryTaskNode::queryCallback, this, std::placeholders::_1));
+    ground_mode_sub_ = create_subscription<std_msgs::msg::UInt8>(
+      ground_mode_topic_,
+      rclcpp::QoS(10).reliable(),
+      std::bind(&WarehouseInventoryTaskNode::groundModeCallback, this, std::placeholders::_1));
+    ground_route_sub_ = create_subscription<std_msgs::msg::String>(
+      ground_route_topic_,
+      rclcpp::QoS(10).reliable(),
+      std::bind(&WarehouseInventoryTaskNode::groundRouteCallback, this, std::placeholders::_1));
 
     publishRoute(publishable_route_);
 
     phase_ = mission_mode_ == MissionMode::TARGET ?
-      MissionPhase::WAIT_TARGET_BARCODE : MissionPhase::WAIT_STATE;
+      MissionPhase::WAIT_TARGET_BARCODE : MissionPhase::WAIT_MODE;
+    mode_select_deadline_ = now() + rclcpp::Duration::from_seconds(mode_select_grace_sec_);
     aux_.setAll(0, 0, 0);
     setVisualTakeover(false);
     flight_.publishActiveController(3);
+    publishDTaskStatus("ready");
 
     monitor_timer_ = create_wall_timer(
       std::chrono::duration<double>(timer_period_sec_),
@@ -360,10 +449,14 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Warehouse inventory task ready: mode=%s, route_steps=%zu, safety_clearance=%.1fcm.",
+      "Warehouse inventory task ready: mode=%s, route_steps=%zu, safety_clearance=%.1fcm, "
+      "mode_topic=%s route_topic=%s grace=%.2fs.",
       mission_mode_ == MissionMode::TARGET ? "target" : "inventory",
       active_steps_.size(),
-      kScanClearanceCm);
+      kScanClearanceCm,
+      ground_mode_topic_.c_str(),
+      ground_route_topic_.c_str(),
+      mode_select_grace_sec_);
   }
 
 private:
@@ -394,21 +487,20 @@ private:
       RackSpec{1, 350.0},
     };
     faces_ = {
-      FaceSpec{'A', 0, -1, 90.0},
-      FaceSpec{'B', 0, 1, -90.0},
-      FaceSpec{'C', 1, -1, 90.0},
-      FaceSpec{'D', 1, 1, -90.0},
+      FaceSpec{'A', 0, -1, 0.0},
+      FaceSpec{'B', 0, 1, 180.0},
+      FaceSpec{'C', 1, -1, 0.0},
+      FaceSpec{'D', 1, 1, 180.0},
     };
 
     safety_rects_.clear();
     for (const auto & rack : racks_) {
-      const double rack_x = fieldToMapX(rack.x_field_cm);
-      safety_rects_.push_back(SafetyRect{
-        rack_x - kRackHalfThicknessCm - kScanClearanceCm,
+      const double rack_old_x = fieldToMapX(rack.x_field_cm);
+      safety_rects_.push_back(oldMapRectToFlightMap(
+        rack_old_x - kRackHalfThicknessCm - kScanClearanceCm,
         fieldToMapY(kRackYMinFieldCm - kScanClearanceCm),
-        rack_x + kRackHalfThicknessCm + kScanClearanceCm,
-        fieldToMapY(kRackYMaxFieldCm + kScanClearanceCm),
-      });
+        rack_old_x + kRackHalfThicknessCm + kScanClearanceCm,
+        fieldToMapY(kRackYMaxFieldCm + kScanClearanceCm)));
     }
 
     slots_by_face_.clear();
@@ -457,12 +549,11 @@ private:
       coord.str(),
       face.face,
       slot,
-      WaypointTarget{
+      oldMapToFlightTarget(
         fieldToMapX(scan_x_field),
         fieldToMapY(slot_y_field_cm),
         slot_z_cm,
-        face.yaw_deg,
-      },
+        face.yaw_deg),
     };
   }
 
@@ -486,46 +577,10 @@ private:
         return *found;
       };
 
-    std::vector<std::vector<int>> orders;
-    for (const bool top_first : {true, false}) {
-      for (const bool increasing : {true, false}) {
-        std::vector<int> top{1, 2, 3};
-        std::vector<int> bottom{4, 5, 6};
-        if (!increasing) {
-          std::reverse(top.begin(), top.end());
-          std::reverse(bottom.begin(), bottom.end());
-        }
-        auto second = top_first ? bottom : top;
-        std::reverse(second.begin(), second.end());
-        auto first = top_first ? top : bottom;
-        first.insert(first.end(), second.begin(), second.end());
-        orders.push_back(first);
-      }
-    }
-
-    for (const bool increasing : {true, false}) {
-      for (const bool top_first : {true, false}) {
-        std::vector<int> cols{0, 1, 2};
-        if (!increasing) {
-          std::reverse(cols.begin(), cols.end());
-        }
-        std::vector<int> order;
-        bool current_top_first = top_first;
-        for (const int col : cols) {
-          const int top_slot = col + 1;
-          const int bottom_slot = col + 4;
-          if (current_top_first) {
-            order.push_back(top_slot);
-            order.push_back(bottom_slot);
-          } else {
-            order.push_back(bottom_slot);
-            order.push_back(top_slot);
-          }
-          current_top_first = !current_top_first;
-        }
-        orders.push_back(order);
-      }
-    }
+    std::vector<std::vector<int>> orders{
+      {1, 2, 3, 6, 5, 4},
+      {3, 2, 1, 4, 5, 6},
+    };
 
     std::vector<std::vector<SlotTarget>> variants;
     for (const auto & order : orders) {
@@ -626,7 +681,7 @@ private:
       return result;
     }
 
-    const double transit_z = std::max(start.z_cm, end.z_cm);
+    const double transit_z = start.z_cm;
     for (std::size_t i = 1; i + 1 < path.size(); ++i) {
       if (distance2d(path[i], path[i - 1]) < 0.5) {
         continue;
@@ -636,12 +691,29 @@ private:
     return result;
   }
 
+  void appendTurnInPlace(
+    WaypointTarget & current,
+    double target_yaw_deg,
+    std::vector<RouteStep> & steps) const
+  {
+    const double dyaw = normalizeAngleDeg(target_yaw_deg - current.yaw_deg);
+    if (std::fabs(dyaw) <= kTurnYawThresholdDeg) {
+      current.yaw_deg = target_yaw_deg;
+      return;
+    }
+
+    current.yaw_deg = target_yaw_deg;
+    steps.push_back(RouteStep{current, false, "", "turn"});
+  }
+
   void appendTransit(
     const WaypointTarget & start,
     const WaypointTarget & end,
     std::vector<RouteStep> & steps) const
   {
-    const auto transit = safeTransitWaypoints(start, end);
+    WaypointTarget current = start;
+    appendTurnInPlace(current, end.yaw_deg, steps);
+    const auto transit = safeTransitWaypoints(current, end);
     for (const auto & target : transit) {
       steps.push_back(RouteStep{target, false, "", "transit"});
     }
@@ -651,7 +723,9 @@ private:
   {
     double cost = 0.0;
     WaypointTarget current = start;
-    auto transit = safeTransitWaypoints(start, end);
+    cost += yawTurnTimeCost(current.yaw_deg, end.yaw_deg);
+    current.yaw_deg = end.yaw_deg;
+    auto transit = safeTransitWaypoints(current, end);
     for (const auto & waypoint : transit) {
       cost += segmentTimeCost(current, waypoint);
       current = waypoint;
@@ -674,103 +748,58 @@ private:
 
   std::vector<RouteStep> planBestInventoryRoute() const
   {
-    std::array<char, 4> face_order{'A', 'B', 'C', 'D'};
-    std::unordered_map<char, std::vector<std::vector<SlotTarget>>> variants;
-    std::vector<SlotTarget> all_slots;
-    std::unordered_map<std::string, std::size_t> slot_index;
-    for (const char face : face_order) {
-      variants[face] = faceVariants(face);
-      const auto iter = slots_by_face_.find(face);
-      if (iter == slots_by_face_.end()) {
-        throw std::runtime_error("Missing face slots during planning.");
-      }
-      for (const auto & slot : iter->second) {
-        slot_index[slot.coord] = all_slots.size();
-        all_slots.push_back(slot);
-      }
-    }
+    const std::vector<std::pair<char, std::vector<int>>> fixed_route{
+      {'A', {1, 2, 3, 6, 5, 4}},
+      {'C', {4, 5, 6, 3, 2, 1}},
+      {'B', {1, 2, 3, 6, 5, 4}},
+      {'D', {4, 5, 6, 3, 2, 1}},
+    };
 
-    constexpr std::size_t kHomeIndex = kInventoryCount;
-    constexpr std::size_t kLandingIndex = kInventoryCount + 1U;
-    std::vector<WaypointTarget> cost_points;
-    cost_points.reserve(kInventoryCount + 2U);
-    for (const auto & slot : all_slots) {
-      cost_points.push_back(slot.target);
-    }
-    cost_points.push_back(homeAtCruise());
-    cost_points.push_back(landingAtCruise());
+    auto slot_by_number = [this](char face, int slot_number) -> SlotTarget {
+        const auto iter = slots_by_face_.find(face);
+        if (iter == slots_by_face_.end()) {
+          throw std::runtime_error("Missing face slots during planning.");
+        }
 
-    std::vector<std::vector<double>> pair_cost(
-      cost_points.size(),
-      std::vector<double>(cost_points.size(), 0.0));
-    for (std::size_t i = 0; i < cost_points.size(); ++i) {
-      for (std::size_t j = 0; j < cost_points.size(); ++j) {
-        if (i == j) {
-          continue;
+        const auto found = std::find_if(
+          iter->second.begin(),
+          iter->second.end(),
+          [slot_number](const SlotTarget & target) {
+            return target.slot == slot_number;
+          });
+        if (found == iter->second.end()) {
+          throw std::runtime_error("Missing face slot during planning.");
         }
-        pair_cost[i][j] = safeCostBetween(cost_points[i], cost_points[j]);
-      }
-    }
-
-    auto sequence_cost = [&slot_index, &pair_cost](const std::vector<SlotTarget> & sequence) {
-        if (sequence.empty()) {
-          return 0.0;
-        }
-        auto index_of = [&slot_index](const SlotTarget & slot) {
-            const auto found = slot_index.find(slot.coord);
-            if (found == slot_index.end()) {
-              throw std::runtime_error("Route sequence references unknown slot.");
-            }
-            return found->second;
-          };
-        double cost = pair_cost[kHomeIndex][index_of(sequence.front())];
-        for (std::size_t i = 1; i < sequence.size(); ++i) {
-          cost += pair_cost[index_of(sequence[i - 1])][index_of(sequence[i])];
-        }
-        cost += pair_cost[index_of(sequence.back())][kLandingIndex];
-        return cost;
+        return *found;
       };
 
-    double best_cost = std::numeric_limits<double>::infinity();
-    std::vector<SlotTarget> best_sequence;
-    std::sort(face_order.begin(), face_order.end());
-    do {
-      const auto & v0 = variants[face_order[0]];
-      const auto & v1 = variants[face_order[1]];
-      const auto & v2 = variants[face_order[2]];
-      const auto & v3 = variants[face_order[3]];
-      for (const auto & s0 : v0) {
-        for (const auto & s1 : v1) {
-          for (const auto & s2 : v2) {
-            for (const auto & s3 : v3) {
-              std::vector<SlotTarget> sequence;
-              sequence.reserve(24);
-              sequence.insert(sequence.end(), s0.begin(), s0.end());
-              sequence.insert(sequence.end(), s1.begin(), s1.end());
-              sequence.insert(sequence.end(), s2.begin(), s2.end());
-              sequence.insert(sequence.end(), s3.begin(), s3.end());
-              const double cost = sequence_cost(sequence);
-              if (cost < best_cost) {
-                best_cost = cost;
-                best_sequence = sequence;
-              }
-            }
-          }
-        }
+    std::vector<SlotTarget> sequence;
+    sequence.reserve(kInventoryCount);
+    for (const auto & [face, slot_numbers] : fixed_route) {
+      for (const int slot_number : slot_numbers) {
+        sequence.push_back(slot_by_number(face, slot_number));
       }
-    } while (std::next_permutation(face_order.begin(), face_order.end()));
+    }
 
-    if (best_sequence.size() != kInventoryCount) {
+    if (sequence.size() != kInventoryCount) {
       throw std::runtime_error("Failed to plan a complete 24-slot warehouse route.");
     }
 
-    auto steps = expandSequenceToSteps(best_sequence);
+    double route_cost = 0.0;
+    WaypointTarget current = homeAtCruise();
+    for (const auto & slot : sequence) {
+      route_cost += safeCostBetween(current, slot.target);
+      current = slot.target;
+    }
+    route_cost += safeCostBetween(current, landingAtCruise(current.yaw_deg));
+
+    auto steps = expandSequenceToSteps(sequence);
     RCLCPP_INFO(
       get_logger(),
       "Planned warehouse route: scan_points=%zu expanded_steps=%zu score=%.3f.",
-      best_sequence.size(),
+      sequence.size(),
       steps.size(),
-      best_cost);
+      route_cost);
     logRouteSafety(steps);
     return steps;
   }
@@ -781,10 +810,6 @@ private:
       if (!step.scan) {
         continue;
       }
-      const auto face = step.coord.empty() ? '?' : step.coord.front();
-      const int rack_index = (face == 'A' || face == 'B') ? 0 : 1;
-      const auto rack_x = fieldToMapX(racks_[rack_index].x_field_cm);
-      const double clearance = std::fabs(step.target.x_cm - rack_x);
       RCLCPP_INFO(
         get_logger(),
         "Route scan %-2s x=%.1f y=%.1f z=%.1f yaw=%.1f clearance=%.1fcm.",
@@ -793,7 +818,7 @@ private:
         step.target.y_cm,
         step.target.z_cm,
         step.target.yaw_deg,
-        clearance);
+        kScanClearanceCm);
     }
   }
 
@@ -802,24 +827,22 @@ private:
     return WaypointTarget{0.0, 0.0, kCruiseHeightCm, 0.0};
   }
 
-  WaypointTarget landingAtCruise() const
+  WaypointTarget landingAtCruise(double yaw_deg = 0.0) const
   {
-    return WaypointTarget{
+    return oldMapToFlightTarget(
       fieldToMapX(kLandingFieldXCm),
       fieldToMapY(kLandingFieldYCm),
       kCruiseHeightCm,
-      0.0,
-    };
+      yaw_deg);
   }
 
-  WaypointTarget landingFinal() const
+  WaypointTarget landingFinal(double yaw_deg = 0.0) const
   {
-    return WaypointTarget{
+    return oldMapToFlightTarget(
       fieldToMapX(kLandingFieldXCm),
       fieldToMapY(kLandingFieldYCm),
       kHomeZCm,
-      0.0,
-    };
+      yaw_deg);
   }
 
   void openEventCsv()
@@ -903,6 +926,307 @@ private:
     visual_takeover_pub_->publish(msg);
   }
 
+  void publishDTaskStatus(const std::string & note)
+  {
+    if (!d_task_status_pub_) {
+      return;
+    }
+
+    std_msgs::msg::String msg;
+    std::ostringstream out;
+    out << "{"
+        << "\"mode\":\"" << (mission_mode_ == MissionMode::TARGET ? "target" : "inventory") << "\","
+        << "\"mode_value\":" << (mission_mode_ == MissionMode::TARGET ? 1 : 0) << ','
+        << "\"phase\":\"" << phaseName(phase_) << "\","
+        << "\"locked\":" << (mission_locked_ ? "true" : "false") << ','
+        << "\"target_id\":" << target_id_ << ','
+        << "\"route_valid\":" << (ground_route_valid_ ? "true" : "false") << ','
+        << "\"route_loaded\":" << (ground_route_loaded_ ? "true" : "false") << ','
+        << "\"active_steps\":" << active_steps_.size() << ','
+        << "\"current_step_index\":" << current_step_index_ << ','
+        << "\"note\":\"" << jsonEscape(note) << "\"}";
+    msg.data = out.str();
+    d_task_status_pub_->publish(msg);
+    last_status_pub_stamp_ = now();
+  }
+
+  void publishDTaskStatusThrottled(const std::string & note, double period_sec = 1.0)
+  {
+    if (last_status_pub_stamp_.nanoseconds() != 0 &&
+      (now() - last_status_pub_stamp_).seconds() < period_sec)
+    {
+      return;
+    }
+    publishDTaskStatus(note);
+  }
+
+  bool modeSwitchAllowed() const
+  {
+    return !mission_locked_ &&
+           (phase_ == MissionPhase::WAIT_MODE ||
+            phase_ == MissionPhase::WAIT_STATE ||
+            phase_ == MissionPhase::WAIT_TARGET_BARCODE ||
+            phase_ == MissionPhase::WAIT_GROUND_ROUTE);
+  }
+
+  void selectInventoryMode(const std::string & reason)
+  {
+    mission_mode_ = MissionMode::INVENTORY;
+    target_id_ = 0;
+    accepted_barcode_ = 0;
+    target_slot_.reset();
+    ground_route_valid_ = false;
+    ground_route_loaded_ = false;
+    ground_route_steps_.clear();
+    active_steps_ = planBestInventoryRoute();
+    publishable_route_ = routeWithLanding(active_steps_);
+    publishRoute(publishable_route_);
+    phase_ = MissionPhase::WAIT_STATE;
+    RCLCPP_INFO(get_logger(), "D task mode set to inventory by %s.", reason.c_str());
+    logEvent("mode_inventory", "", 0, reason);
+    publishDTaskStatus("mode_inventory_" + reason);
+  }
+
+  void selectGroundTargetMode(const std::string & reason)
+  {
+    mission_mode_ = MissionMode::TARGET;
+    target_id_ = 0;
+    accepted_barcode_ = 0;
+    target_slot_.reset();
+    ground_route_valid_ = false;
+    ground_route_loaded_ = false;
+    ground_route_steps_.clear();
+    active_steps_.clear();
+    publishable_route_.clear();
+    phase_ = MissionPhase::WAIT_TARGET_BARCODE;
+    aux_.setAll(0, 0, 0);
+    setVisualTakeover(false);
+    flight_.publishActiveController(3);
+    RCLCPP_INFO(get_logger(), "D task mode set to ground target by %s.", reason.c_str());
+    logEvent("mode_ground_target", "", 0, reason);
+    publishDTaskStatus("mode_ground_target_" + reason);
+  }
+
+  void groundModeCallback(const std_msgs::msg::UInt8::SharedPtr msg)
+  {
+    if (!modeSwitchAllowed()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Ignored /d_task/mode=%u because mission is locked or not selectable.",
+        static_cast<unsigned>(msg->data));
+      publishDTaskStatus("mode_ignored_locked");
+      return;
+    }
+
+    if (msg->data == 0U) {
+      selectInventoryMode("ground_mode_0");
+      return;
+    }
+
+    if (msg->data == 1U) {
+      selectGroundTargetMode("ground_mode_1");
+      return;
+    }
+
+    RCLCPP_WARN(
+      get_logger(),
+      "Ignored invalid /d_task/mode=%u. Expected 0 or 1.",
+      static_cast<unsigned>(msg->data));
+    publishDTaskStatus("invalid_mode_value");
+  }
+
+  bool readRequiredNumber(
+    const Json::Value & value,
+    const std::string & key,
+    std::size_t step_index,
+    double & output,
+    std::string & error) const
+  {
+    if (!value.isMember(key) || !value[key].isNumeric()) {
+      error = "steps[" + std::to_string(step_index) + "]." + key + " must be a number";
+      return false;
+    }
+
+    output = value[key].asDouble();
+    if (!std::isfinite(output)) {
+      error = "steps[" + std::to_string(step_index) + "]." + key + " must be finite";
+      return false;
+    }
+    return true;
+  }
+
+  bool parseGroundRouteJson(
+    const std::string & text,
+    std::vector<RouteStep> & steps,
+    std::string & error) const
+  {
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    Json::Value root;
+    std::string parse_errors;
+    std::istringstream input(text);
+    if (!Json::parseFromStream(builder, input, &root, &parse_errors)) {
+      error = "invalid JSON: " + parse_errors;
+      return false;
+    }
+
+    if (!root.isObject()) {
+      error = "route root must be an object";
+      return false;
+    }
+
+    const Json::Value & json_steps = root["steps"];
+    if (!json_steps.isArray() || json_steps.empty()) {
+      error = "route.steps must be a non-empty array";
+      return false;
+    }
+
+    steps.clear();
+    steps.reserve(json_steps.size());
+    bool has_scan_step = false;
+    for (Json::ArrayIndex i = 0; i < json_steps.size(); ++i) {
+      const Json::Value & step = json_steps[i];
+      if (!step.isObject()) {
+        error = "steps[" + std::to_string(i) + "] must be an object";
+        return false;
+      }
+
+      double x_cm = 0.0;
+      double y_cm = 0.0;
+      double z_cm = 0.0;
+      double yaw_deg = 0.0;
+      if (!readRequiredNumber(step, "x_cm", i, x_cm, error) ||
+        !readRequiredNumber(step, "y_cm", i, y_cm, error) ||
+        !readRequiredNumber(step, "z_cm", i, z_cm, error) ||
+        !readRequiredNumber(step, "yaw_deg", i, yaw_deg, error))
+      {
+        return false;
+      }
+
+      bool scan = false;
+      if (step.isMember("scan")) {
+        if (!step["scan"].isBool()) {
+          error = "steps[" + std::to_string(i) + "].scan must be a boolean";
+          return false;
+        }
+        scan = step["scan"].asBool();
+      }
+      has_scan_step = has_scan_step || scan;
+
+      std::string kind = scan ? "scan" : "transit";
+      if (step.isMember("kind")) {
+        if (!step["kind"].isString()) {
+          error = "steps[" + std::to_string(i) + "].kind must be a string";
+          return false;
+        }
+        kind = step["kind"].asString();
+      }
+
+      std::string coord;
+      if (step.isMember("coord")) {
+        if (!step["coord"].isString()) {
+          error = "steps[" + std::to_string(i) + "].coord must be a string";
+          return false;
+        }
+        coord = step["coord"].asString();
+      }
+
+      steps.push_back(RouteStep{
+        WaypointTarget{x_cm, y_cm, z_cm, yaw_deg},
+        scan,
+        coord,
+        kind,
+      });
+    }
+
+    if (!has_scan_step) {
+      error = "route.steps must contain at least one scan=true step";
+      return false;
+    }
+
+    return true;
+  }
+
+  std::optional<SlotTarget> firstScanSlotFromRoute(const std::vector<RouteStep> & steps) const
+  {
+    for (const auto & step : steps) {
+      if (!step.scan) {
+        continue;
+      }
+      int slot = 0;
+      if (step.coord.size() > 1) {
+        try {
+          slot = std::stoi(step.coord.substr(1));
+        } catch (const std::exception &) {
+          slot = 0;
+        }
+      }
+      return SlotTarget{
+        step.coord,
+        step.coord.empty() ? '?' : step.coord.front(),
+        slot,
+        step.target,
+      };
+    }
+    return std::nullopt;
+  }
+
+  void activateGroundRoute(const std::string & reason)
+  {
+    if (!ground_route_valid_ || ground_route_steps_.empty()) {
+      publishDTaskStatus("ground_route_not_ready");
+      return;
+    }
+
+    active_steps_ = ground_route_steps_;
+    publishable_route_ = routeWithLanding(active_steps_);
+    target_slot_ = firstScanSlotFromRoute(active_steps_);
+    ground_route_loaded_ = true;
+    publishRoute(publishable_route_);
+    phase_ = MissionPhase::WAIT_STATE;
+    RCLCPP_INFO(
+      get_logger(),
+      "Ground route accepted: steps=%zu target_id=%d.",
+      active_steps_.size(),
+      target_id_);
+    logEvent(
+      "ground_route_loaded",
+      target_slot_ ? target_slot_->coord : "",
+      target_id_,
+      reason);
+    publishDTaskStatus("ground_route_loaded_" + reason);
+  }
+
+  void groundRouteCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    if (!modeSwitchAllowed()) {
+      RCLCPP_WARN(get_logger(), "Ignored /d_task/route because mission is locked.");
+      publishDTaskStatus("route_ignored_locked");
+      return;
+    }
+
+    std::vector<RouteStep> parsed_steps;
+    std::string error;
+    if (!parseGroundRouteJson(msg->data, parsed_steps, error)) {
+      ground_route_valid_ = false;
+      ground_route_loaded_ = false;
+      ground_route_steps_.clear();
+      RCLCPP_ERROR(get_logger(), "Rejected /d_task/route: %s.", error.c_str());
+      publishDTaskStatus("route_rejected_" + error);
+      return;
+    }
+
+    ground_route_steps_ = parsed_steps;
+    ground_route_valid_ = true;
+    ground_route_loaded_ = false;
+    RCLCPP_INFO(get_logger(), "Received valid /d_task/route with %zu steps.", ground_route_steps_.size());
+    publishDTaskStatus("ground_route_valid");
+
+    if (mission_mode_ == MissionMode::TARGET && target_id_ > 0) {
+      activateGroundRoute("route_callback");
+    }
+  }
+
   void barcodeCallback(const std_msgs::msg::Int32::SharedPtr msg)
   {
     if (msg->data <= 0) {
@@ -915,8 +1239,20 @@ private:
       std_msgs::msg::Int32 target_msg;
       target_msg.data = target_id_;
       target_id_pub_->publish(target_msg);
-      RCLCPP_INFO(get_logger(), "Target mode accepted preflight target id: %d.", target_id_);
-      logEvent("target_id_detected", "", target_id_, "preflight");
+      qr_id_pub_->publish(target_msg);
+      RCLCPP_INFO(
+        get_logger(),
+        "Target mode accepted preflight QR id: %d. Published to %s.",
+        target_id_,
+        d_task_qr_id_topic_.c_str());
+      logEvent("target_id_detected", "", target_id_, "preflight_ground_station");
+      if (phase_ == MissionPhase::WAIT_TARGET_BARCODE) {
+        phase_ = MissionPhase::WAIT_GROUND_ROUTE;
+      }
+      publishDTaskStatus("qr_id_published");
+      if (ground_route_valid_) {
+        activateGroundRoute("barcode_callback");
+      }
     }
   }
 
@@ -978,8 +1314,14 @@ private:
   void timerCallback()
   {
     switch (phase_) {
+      case MissionPhase::WAIT_MODE:
+        processWaitMode();
+        break;
       case MissionPhase::WAIT_TARGET_BARCODE:
         processWaitTargetBarcode();
+        break;
+      case MissionPhase::WAIT_GROUND_ROUTE:
+        processWaitGroundRoute();
         break;
       case MissionPhase::WAIT_STATE:
         if (flight_.hasState()) {
@@ -1017,6 +1359,32 @@ private:
     }
   }
 
+  void processWaitMode()
+  {
+    if (mission_mode_ == MissionMode::TARGET) {
+      phase_ = MissionPhase::WAIT_TARGET_BARCODE;
+      publishDTaskStatus("initial_target_mode");
+      return;
+    }
+
+    const auto now_time = now();
+    if (now_time >= mode_select_deadline_) {
+      phase_ = MissionPhase::WAIT_STATE;
+      RCLCPP_INFO(get_logger(), "No /d_task/mode=1 received; starting default inventory task.");
+      logEvent("mode_default_inventory", "", 0, "grace_timeout");
+      publishDTaskStatus("default_inventory_grace_timeout");
+      return;
+    }
+
+    RCLCPP_INFO_THROTTLE(
+      get_logger(),
+      *get_clock(),
+      1000,
+      "Waiting %.2fs for optional /d_task/mode=1 before default inventory.",
+      (mode_select_deadline_ - now_time).seconds());
+    publishDTaskStatusThrottled("waiting_mode_grace");
+  }
+
   void processWaitTargetBarcode()
   {
     if (target_id_ <= 0) {
@@ -1026,27 +1394,35 @@ private:
         2000,
         "Target mode waiting for preflight QR code on %s.",
         barcode_topic_.c_str());
+      publishDTaskStatusThrottled("waiting_qr_id");
       return;
     }
 
-    SlotTarget target_slot;
-    if (!loadLatestSuccessTarget(target_id_, target_slot)) {
-      stopWithoutTakeoff("latest_success_missing_or_target_not_found");
+    phase_ = MissionPhase::WAIT_GROUND_ROUTE;
+    publishDTaskStatus("qr_id_ready_waiting_route");
+  }
+
+  void processWaitGroundRoute()
+  {
+    if (target_id_ <= 0) {
+      phase_ = MissionPhase::WAIT_TARGET_BARCODE;
+      publishDTaskStatus("route_wait_without_qr");
       return;
     }
 
-    active_steps_ = planDirectTargetRoute(target_slot);
-    publishable_route_ = routeWithLanding(active_steps_);
-    publishRoute(publishable_route_);
-    target_slot_ = target_slot;
-    RCLCPP_INFO(
+    if (ground_route_valid_) {
+      activateGroundRoute("wait_ground_route");
+      return;
+    }
+
+    RCLCPP_INFO_THROTTLE(
       get_logger(),
-      "Target mode loaded latest inventory: id=%d coord=%s. Direct route steps=%zu.",
-      target_id_,
-      target_slot.coord.c_str(),
-      active_steps_.size());
-    logEvent("target_route_loaded", target_slot.coord, target_id_, "wait_for_flight_state");
-    phase_ = MissionPhase::WAIT_STATE;
+      *get_clock(),
+      2000,
+      "Target mode waiting for ground station route on %s after QR id %d.",
+      ground_route_topic_.c_str(),
+      target_id_);
+    publishDTaskStatusThrottled("waiting_ground_route");
   }
 
   std::vector<RouteStep> planDirectTargetRoute(const SlotTarget & target_slot) const
@@ -1064,9 +1440,11 @@ private:
     if (!steps.empty()) {
       current = steps.back().target;
     }
-    appendTransit(current, landingAtCruise(), display_steps);
-    display_steps.push_back(RouteStep{landingAtCruise(), false, "", "landing_cruise"});
-    display_steps.push_back(RouteStep{landingFinal(), false, "", "landing_final"});
+    const auto landing_cruise = landingAtCruise(current.yaw_deg);
+    const auto landing_final = landingFinal(current.yaw_deg);
+    appendTransit(current, landing_cruise, display_steps);
+    display_steps.push_back(RouteStep{landing_cruise, false, "", "landing_cruise"});
+    display_steps.push_back(RouteStep{landing_final, false, "", "landing_final"});
     return display_steps;
   }
 
@@ -1082,6 +1460,7 @@ private:
 
   void startMission()
   {
+    mission_locked_ = true;
     current_step_index_ = 0;
     return_step_index_ = 0;
     accepted_barcode_ = 0;
@@ -1091,6 +1470,7 @@ private:
     phase_ = MissionPhase::TAKEOFF;
     RCLCPP_INFO(get_logger(), "Warehouse mission takeoff to %.1fcm.", kCruiseHeightCm);
     logEvent("takeoff", "", 0, "start_mission");
+    publishDTaskStatus("mission_locked_takeoff");
   }
 
   void startNextStep()
@@ -1266,8 +1646,9 @@ private:
     if (const auto active_target = flight_.currentTarget()) {
       current = *active_target;
     }
-    appendTransit(current, landingAtCruise(), return_steps_);
-    return_steps_.push_back(RouteStep{landingAtCruise(), false, "", "landing_cruise"});
+    const auto landing_cruise = landingAtCruise(current.yaw_deg);
+    appendTransit(current, landing_cruise, return_steps_);
+    return_steps_.push_back(RouteStep{landing_cruise, false, "", "landing_cruise"});
     return_step_index_ = 0;
     phase_ = MissionPhase::RETURN_TRANSIT;
     RCLCPP_INFO(get_logger(), "Returning to landing point. return_steps=%zu.", return_steps_.size());
@@ -1278,7 +1659,8 @@ private:
   void startNextReturnStep()
   {
     if (return_step_index_ >= return_steps_.size()) {
-      flight_.goTo(landingFinal());
+      const double yaw_deg = return_steps_.empty() ? 0.0 : return_steps_.back().target.yaw_deg;
+      flight_.goTo(landingFinal(yaw_deg));
       phase_ = MissionPhase::DESCEND;
       logEvent("landing_descend", "", accepted_barcode_, "final");
       return;
@@ -1353,6 +1735,7 @@ private:
     std_msgs::msg::Empty complete_msg;
     mission_complete_pub_->publish(complete_msg);
     phase_ = MissionPhase::COMPLETE;
+    publishDTaskStatus("mission_complete");
   }
 
   std::string inventoryResultsJson(bool success) const
@@ -1516,17 +1899,26 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr scan_result_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr all_results_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr target_id_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr qr_id_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr query_result_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr d_task_status_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr barcode_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr query_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr ground_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr ground_route_sub_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
 
   MissionMode mission_mode_{MissionMode::INVENTORY};
-  MissionPhase phase_{MissionPhase::WAIT_STATE};
+  MissionPhase phase_{MissionPhase::WAIT_MODE};
   double timer_period_sec_{0.05};
+  double mode_select_grace_sec_{0.5};
   std::string barcode_topic_;
   std::string fine_data_topic_;
+  std::string ground_mode_topic_;
+  std::string ground_route_topic_;
+  std::string d_task_qr_id_topic_;
+  std::string d_task_status_topic_;
   std::string log_dir_;
   std::string event_csv_path_;
   std::ofstream event_csv_;
@@ -1537,6 +1929,7 @@ private:
   std::unordered_map<char, std::vector<SlotTarget>> slots_by_face_;
   std::vector<RouteStep> active_steps_;
   std::vector<RouteStep> publishable_route_;
+  std::vector<RouteStep> ground_route_steps_;
   std::vector<RouteStep> return_steps_;
   std::size_t current_step_index_{0};
   std::size_t return_step_index_{0};
@@ -1552,7 +1945,12 @@ private:
   rclcpp::Time last_fine_stamp_;
   rclcpp::Time scan_start_stamp_;
   rclcpp::Time action_stamp_;
+  rclcpp::Time mode_select_deadline_;
+  rclcpp::Time last_status_pub_stamp_;
   bool visual_takeover_enabled_{false};
+  bool mission_locked_{false};
+  bool ground_route_valid_{false};
+  bool ground_route_loaded_{false};
 };
 
 }  // namespace tasks

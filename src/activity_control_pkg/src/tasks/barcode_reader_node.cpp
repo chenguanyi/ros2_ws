@@ -2,7 +2,9 @@
 #include <cctype>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,9 @@ public:
     stable_count_required_ = declare_parameter("stable_count", 3);
     republish_period_sec_ = declare_parameter("republish_period_sec", 1.0);
     publish_fine_data_ = declare_parameter("publish_fine_data", false);
+    overlay_target_offset_x_px_ = declare_parameter("overlay_target_offset_x_px", 0.0);
+    overlay_target_offset_y_px_ = declare_parameter("overlay_target_offset_y_px", 0.0);
+    overlay_pixel_deadzone_ = declare_parameter("overlay_pixel_deadzone", 5.0);
 
     if (stable_count_required_ < 1) {
       throw std::runtime_error("stable_count must be >= 1.");
@@ -218,30 +223,151 @@ private:
       return;
     }
 
+    cv::Point2d qr_center(
+      static_cast<double>(box.x) + static_cast<double>(box.width) * 0.5,
+      static_cast<double>(box.y) + static_cast<double>(box.height) * 0.5);
+    if (!points.empty()) {
+      qr_center = cv::Point2d(0.0, 0.0);
+      for (const auto & point : points) {
+        qr_center.x += static_cast<double>(point.x);
+        qr_center.y += static_cast<double>(point.y);
+      }
+      qr_center.x /= static_cast<double>(points.size());
+      qr_center.y /= static_cast<double>(points.size());
+    }
+
     cv::rectangle(image, box, cv::Scalar(0, 255, 0), 3);
     if (points.size() >= 4U) {
       cv::polylines(image, points, true, cv::Scalar(0, 180, 255), 2);
     }
 
-    const auto text = std::to_string(value);
+    const cv::Point2d image_center(
+      static_cast<double>(image.cols) * 0.5,
+      static_cast<double>(image.rows) * 0.5);
+    const cv::Point target_point(
+      static_cast<int>(std::lround(image_center.x + overlay_target_offset_x_px_)),
+      static_cast<int>(std::lround(image_center.y + overlay_target_offset_y_px_)));
+    const cv::Point qr_point(
+      static_cast<int>(std::lround(qr_center.x)),
+      static_cast<int>(std::lround(qr_center.y)));
+    const double offset_x = qr_center.x - image_center.x;
+    const double offset_y = qr_center.y - image_center.y;
+    const double error_x = offset_x - overlay_target_offset_x_px_;
+    const double error_y = offset_y - overlay_target_offset_y_px_;
+    const int deadzone = std::max(0, static_cast<int>(std::lround(overlay_pixel_deadzone_)));
+    const bool in_range =
+      std::abs(error_x) <= static_cast<double>(deadzone) &&
+      std::abs(error_y) <= static_cast<double>(deadzone);
+
+    cv::Rect target_range(
+      target_point.x - deadzone,
+      target_point.y - deadzone,
+      deadzone * 2 + 1,
+      deadzone * 2 + 1);
+    target_range &= cv::Rect(0, 0, image.cols, image.rows);
+    if (!target_range.empty()) {
+      cv::rectangle(image, target_range, cv::Scalar(255, 255, 0), 2);
+    }
+    drawCross(image, target_point, 14, cv::Scalar(255, 255, 0), 2);
+    drawCross(image, qr_point, 10, in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 80, 255), 2);
+    cv::line(image, target_point, qr_point, cv::Scalar(255, 255, 255), 1);
+
+    const int panel_x = 12;
+    const int panel_y = std::max(28, image.rows - 92);
+    drawTextWithBackground(
+      image,
+      "QR ID: " + std::to_string(value),
+      cv::Point(panel_x, panel_y),
+      0.7,
+      cv::Scalar(0, 255, 0));
+    drawTextWithBackground(
+      image,
+      "error: " + formatSigned(error_x) + ", " + formatSigned(error_y) + " px",
+      cv::Point(panel_x, panel_y + 28),
+      0.6,
+      in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 220, 255));
+    drawTextWithBackground(
+      image,
+      "range: +/-" + formatFixed(static_cast<double>(deadzone)) + " px " +
+      (in_range ? "OK" : "ALIGN"),
+      cv::Point(panel_x, panel_y + 54),
+      0.6,
+      in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 80, 255));
+  }
+
+  static std::string formatFixed(double value)
+  {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1) << value;
+    return stream.str();
+  }
+
+  static std::string formatSigned(double value)
+  {
+    std::ostringstream stream;
+    if (value >= 0.0) {
+      stream << '+';
+    }
+    stream << std::fixed << std::setprecision(1) << value;
+    return stream.str();
+  }
+
+  static void drawCross(
+    cv::Mat & image,
+    const cv::Point & center,
+    int radius,
+    const cv::Scalar & color,
+    int thickness)
+  {
+    if (center.x < 0 || center.x >= image.cols || center.y < 0 || center.y >= image.rows) {
+      return;
+    }
+    cv::line(
+      image,
+      cv::Point(std::max(0, center.x - radius), center.y),
+      cv::Point(std::min(image.cols - 1, center.x + radius), center.y),
+      color,
+      thickness);
+    cv::line(
+      image,
+      cv::Point(center.x, std::max(0, center.y - radius)),
+      cv::Point(center.x, std::min(image.rows - 1, center.y + radius)),
+      color,
+      thickness);
+  }
+
+  static void drawTextWithBackground(
+    cv::Mat & image,
+    const std::string & text,
+    cv::Point origin,
+    double scale,
+    const cv::Scalar & color)
+  {
     int baseline = 0;
-    const auto text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 1.0, 2, &baseline);
-    const int text_x = std::min(std::max(box.x + box.width + 8, 0), image.cols - text_size.width - 8);
-    const int text_y = std::max(box.y + text_size.height + 4, text_size.height + 8);
-    const cv::Rect text_bg(
-      std::max(0, text_x - 4),
-      std::max(0, text_y - text_size.height - 6),
-      std::min(text_size.width + 8, image.cols - std::max(0, text_x - 4)),
-      text_size.height + baseline + 10);
-    cv::rectangle(image, text_bg, cv::Scalar(0, 0, 0), cv::FILLED);
+    const int thickness = 2;
+    const auto text_size =
+      cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, scale, thickness, &baseline);
+    const int max_x = std::max(4, image.cols - text_size.width - 8);
+    const int max_y = std::max(text_size.height + 8, image.rows - baseline - 8);
+    origin.x = std::clamp(origin.x, 4, max_x);
+    origin.y = std::clamp(origin.y, text_size.height + 8, max_y);
+
+    const cv::Rect bg(
+      std::max(0, origin.x - 4),
+      std::max(0, origin.y - text_size.height - 6),
+      std::min(text_size.width + 8, image.cols - std::max(0, origin.x - 4)),
+      std::min(text_size.height + baseline + 10, image.rows - std::max(0, origin.y - text_size.height - 6)));
+    if (!bg.empty()) {
+      cv::rectangle(image, bg, cv::Scalar(0, 0, 0), cv::FILLED);
+    }
     cv::putText(
       image,
       text,
-      cv::Point(text_x, text_y),
+      origin,
       cv::FONT_HERSHEY_SIMPLEX,
-      1.0,
-      cv::Scalar(0, 255, 0),
-      2);
+      scale,
+      color,
+      thickness);
   }
 
   void publishFineDataIfEnabled(const cv::Mat & image, const zbar::Symbol & symbol)
@@ -291,6 +417,9 @@ private:
   int stable_count_required_{3};
   double republish_period_sec_{1.0};
   bool publish_fine_data_{false};
+  double overlay_target_offset_x_px_{0.0};
+  double overlay_target_offset_y_px_{0.0};
+  double overlay_pixel_deadzone_{5.0};
   int pending_value_{0};
   int pending_count_{0};
   int published_value_{0};

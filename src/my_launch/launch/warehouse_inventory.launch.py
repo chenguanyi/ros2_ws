@@ -16,17 +16,22 @@ from launch_ros.substitutions import FindPackageShare
 # =============================================================================
 # D task warehouse inventory.
 # Fixed geometry and fixed right-side camera fine-control mapping live in code.
-# Only switch mission_mode between inventory and target:
-#   inventory: scan all 24 QR codes and update latest_success.json on success.
-#   target: preflight QR -> latest_success.json lookup -> direct safe route.
+# Default path is requirement 1 inventory. Requirement 2 is selected before
+# takeoff by publishing std_msgs/UInt8 {data: 1} on /d_task/mode. The drone
+# then publishes /d_task/qr_id and waits for the ground station route JSON.
 # =============================================================================
 
-SIDE_CAMERA_DEVICE = "/dev/camera_icspring"
+BOTTOM_CAMERA_DEVICE = "/dev/v4l/by-id/usb-DECXIN_CAMERA_DECXIN_CAMERA_01.00.00-video-index0"
+BOTTOM_IMAGE_TOPIC = "/camera/image_raw"
+SIDE_CAMERA_DEVICE = "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0"
 SIDE_IMAGE_TOPIC = "/warehouse_inventory/side_camera/image_raw"
 BARCODE_TOPIC = "/warehouse_inventory/barcode_value"
 BARCODE_CANDIDATE_TOPIC = "/warehouse_inventory/barcode_candidate"
 BARCODE_OVERLAY_TOPIC = "/warehouse_inventory/barcode_overlay"
 FINE_DATA_TOPIC = "/fine_data"
+VISUAL_TARGET_OFFSET_X_PX = -75.0
+VISUAL_TARGET_OFFSET_Y_PX = 20.0
+VISUAL_PIXEL_DEADZONE = 5.0
 
 
 def _workspace_root() -> str:
@@ -57,10 +62,12 @@ def generate_launch_description() -> LaunchDescription:
     mission_mode = LaunchConfiguration("mission_mode")
     use_rviz = LaunchConfiguration("use_rviz")
     use_camera = LaunchConfiguration("use_camera")
+    use_bottom_camera = LaunchConfiguration("use_bottom_camera")
     use_viewer = LaunchConfiguration("use_viewer")
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
+    mode_select_grace_sec = LaunchConfiguration("mode_select_grace_sec")
     task_log_dir = _task_log_dir("warehouse_inventory")
 
     task_params = {
@@ -74,6 +81,7 @@ def generate_launch_description() -> LaunchDescription:
         "yaw_tolerance_deg": 3.0,
         "log_waypoint_targets": False,
         "timer_period_sec": 0.05,
+        "mode_select_grace_sec": mode_select_grace_sec,
         "barcode_topic": BARCODE_TOPIC,
         "fine_data_topic": FINE_DATA_TOPIC,
     }
@@ -84,7 +92,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "mission_mode",
             default_value="inventory",
-            description="D task mode: inventory or target.",
+            description="Initial D task mode. Usually leave as inventory and use /d_task/mode.",
+        ),
+        DeclareLaunchArgument(
+            "mode_select_grace_sec",
+            default_value="20.0",
+            description="Seconds to wait for optional /d_task/mode=1 before default inventory.",
         ),
         DeclareLaunchArgument(
             "use_rviz",
@@ -97,8 +110,13 @@ def generate_launch_description() -> LaunchDescription:
             description="Start right-side camera and QR reader.",
         ),
         DeclareLaunchArgument(
+            "use_bottom_camera",
+            default_value="true",
+            description="Start bottom camera source on /camera/image_raw.",
+        ),
+        DeclareLaunchArgument(
             "use_viewer",
-            default_value="false",
+            default_value="true",
             description="Start OpenCV side-camera debug viewer.",
         ),
         DeclareLaunchArgument(
@@ -137,6 +155,21 @@ def generate_launch_description() -> LaunchDescription:
                 _launch_path("laser_array_pkg", "laser_array_ground.launch.py")
             ),
         ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                _launch_path("visual_pkg", "camera_source.launch.py")
+            ),
+            launch_arguments={
+                "camera_device": BOTTOM_CAMERA_DEVICE,
+                "width": "640",
+                "height": "480",
+                "camera_fps": "30",
+                "publish_fps": "30.0",
+                "frame_id": "bottom_camera",
+                "image_topic": BOTTOM_IMAGE_TOPIC,
+            }.items(),
+            condition=IfCondition(use_bottom_camera),
+        ),
         Node(
             package="visual_pkg",
             executable="camera_source_node",
@@ -165,6 +198,9 @@ def generate_launch_description() -> LaunchDescription:
                 "overlay_topic": BARCODE_OVERLAY_TOPIC,
                 "fine_data_topic": FINE_DATA_TOPIC,
                 "publish_fine_data": True,
+                "overlay_target_offset_x_px": VISUAL_TARGET_OFFSET_X_PX,
+                "overlay_target_offset_y_px": VISUAL_TARGET_OFFSET_Y_PX,
+                "overlay_pixel_deadzone": VISUAL_PIXEL_DEADZONE,
                 "stable_count": 2,
                 "republish_period_sec": 0.2,
             }],
@@ -179,6 +215,10 @@ def generate_launch_description() -> LaunchDescription:
                 "image_topic": BARCODE_OVERLAY_TOPIC,
                 "candidate_topic": BARCODE_CANDIDATE_TOPIC,
                 "barcode_topic": BARCODE_TOPIC,
+                "fine_data_topic": FINE_DATA_TOPIC,
+                "target_offset_x_px": VISUAL_TARGET_OFFSET_X_PX,
+                "target_offset_y_px": VISUAL_TARGET_OFFSET_Y_PX,
+                "pixel_deadzone": VISUAL_PIXEL_DEADZONE,
                 "window_name": "Warehouse side camera",
                 "display_width": 960,
             }],
@@ -200,9 +240,9 @@ def generate_launch_description() -> LaunchDescription:
                         "visual_kd_x": "0.01",
                         "visual_kp_z": "0.06",
                         "visual_kd_z": "0.01",
-                        "visual_target_offset_x_px": "-75.0",
-                        "visual_target_offset_y_px": "20.0",
-                        "visual_pixel_deadzone": "5.0",
+                        "visual_target_offset_x_px": str(VISUAL_TARGET_OFFSET_X_PX),
+                        "visual_target_offset_y_px": str(VISUAL_TARGET_OFFSET_Y_PX),
+                        "visual_pixel_deadzone": str(VISUAL_PIXEL_DEADZONE),
                         "visual_max_xy_velocity": "20.0",
                         "visual_max_z_velocity": "18.0",
                         "visual_data_timeout_sec": "0.5",

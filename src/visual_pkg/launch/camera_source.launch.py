@@ -17,7 +17,11 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         DeclareLaunchArgument("camera_index", default_value="0", description="[相机] 相机索引。"),
-        DeclareLaunchArgument("camera_device", default_value="", description="[相机] 设备路径；非空时优先于 camera_index。"),
+        DeclareLaunchArgument(
+            "camera_device",
+            default_value="/dev/v4l/by-id/usb-DECXIN_CAMERA_DECXIN_CAMERA_01.00.00-video-index0",
+            description="[底面相机] 设备路径；非空时优先于 camera_index。",
+        ),
         DeclareLaunchArgument("width", default_value="640", description="[相机] 图像宽度。"),
         DeclareLaunchArgument("height", default_value="480", description="[相机] 图像高度。"),
         DeclareLaunchArgument("camera_fps", default_value="30", description="[相机] 设备采集帧率。"),

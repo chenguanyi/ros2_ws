@@ -1,4 +1,8 @@
 #include <chrono>
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 #include <cv_bridge/cv_bridge.h>
@@ -8,6 +12,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/int32_multi_array.hpp>
 
 namespace activity_control_pkg
 {
@@ -26,8 +31,13 @@ public:
       declare_parameter("candidate_topic", std::string("/plant_protection/barcode_candidate"));
     const auto barcode_topic =
       declare_parameter("barcode_topic", std::string("/plant_protection/barcode_value"));
+    const auto fine_data_topic =
+      declare_parameter("fine_data_topic", std::string("/fine_data"));
     window_name_ = declare_parameter("window_name", std::string("Side camera barcode"));
     display_width_ = declare_parameter("display_width", 960);
+    target_offset_x_px_ = declare_parameter("target_offset_x_px", 0.0);
+    target_offset_y_px_ = declare_parameter("target_offset_y_px", 0.0);
+    pixel_deadzone_ = declare_parameter("pixel_deadzone", 5.0);
 
     image_sub_ = create_subscription<sensor_msgs::msg::Image>(
       image_topic,
@@ -49,14 +59,26 @@ public:
         stable_value_ = msg->data;
         stable_stamp_ = now();
       });
+    fine_data_sub_ = create_subscription<std_msgs::msg::Int32MultiArray>(
+      fine_data_topic,
+      rclcpp::QoS(10),
+      [this](const std_msgs::msg::Int32MultiArray::SharedPtr msg) {
+        if (msg->data.size() < 2U) {
+          return;
+        }
+        fine_x_px_ = static_cast<double>(msg->data[0]);
+        fine_y_px_ = static_cast<double>(msg->data[1]);
+        fine_stamp_ = now();
+      });
 
     cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
     RCLCPP_INFO(
       get_logger(),
-      "Side camera viewer ready: image_topic=%s candidate_topic=%s barcode_topic=%s.",
+      "Side camera viewer ready: image_topic=%s candidate_topic=%s barcode_topic=%s fine_data_topic=%s.",
       image_topic.c_str(),
       candidate_topic.c_str(),
-      barcode_topic.c_str());
+      barcode_topic.c_str(),
+      fine_data_topic.c_str());
   }
 
   ~SideCameraViewerNode() override
@@ -107,16 +129,32 @@ private:
     const bool candidate_recent =
       candidate_stamp_.nanoseconds() > 0 && (stamp - candidate_stamp_).seconds() < 1.0;
     const bool stable_seen = stable_stamp_.nanoseconds() > 0;
+    const bool fine_recent =
+      fine_stamp_.nanoseconds() > 0 && (stamp - fine_stamp_).seconds() < 1.0;
 
+    const std::string qr_id_text =
+      stable_seen ? "QR ID: " + std::to_string(stable_value_) :
+      (candidate_recent ? "QR ID: " + std::to_string(candidate_value_) : "QR ID: none");
+    const std::string status_text = candidate_recent ? "recognizing" : "searching";
     const std::string candidate_text =
       candidate_recent ? "candidate: " + std::to_string(candidate_value_) : "candidate: none";
-    const std::string stable_text =
-      stable_seen ? "stable: " + std::to_string(stable_value_) : "stable: none";
-    const std::string status_text = candidate_recent ? "recognizing" : "searching";
+    std::string error_text = "error: none";
+    std::string range_text = "range: +/-" + formatFixed(pixel_deadzone_) + " px";
+    bool in_range = false;
+    if (fine_recent) {
+      const double error_x = fine_x_px_ - target_offset_x_px_;
+      const double error_y = fine_y_px_ - target_offset_y_px_;
+      in_range =
+        std::abs(error_x) <= pixel_deadzone_ &&
+        std::abs(error_y) <= pixel_deadzone_;
+      error_text =
+        "error: " + formatSigned(error_x) + ", " + formatSigned(error_y) + " px";
+      range_text += in_range ? " OK" : " ALIGN";
+    }
 
     const int margin = 12;
     const int line_height = 28;
-    const cv::Rect bg(0, 0, std::min(frame.cols, 360), 104);
+    const cv::Rect bg(0, 0, std::min(frame.cols, 440), 160);
     cv::rectangle(frame, bg, cv::Scalar(0, 0, 0), cv::FILLED);
     cv::putText(
       frame,
@@ -128,20 +166,55 @@ private:
       2);
     cv::putText(
       frame,
-      candidate_text,
+      qr_id_text,
       cv::Point(margin, margin + 2 * line_height - 4),
+      cv::FONT_HERSHEY_SIMPLEX,
+      0.65,
+      stable_seen || candidate_recent ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 255, 255),
+      2);
+    cv::putText(
+      frame,
+      candidate_text,
+      cv::Point(margin, margin + 3 * line_height - 2),
       cv::FONT_HERSHEY_SIMPLEX,
       0.65,
       cv::Scalar(255, 255, 255),
       2);
     cv::putText(
       frame,
-      stable_text,
-      cv::Point(margin, margin + 3 * line_height - 2),
+      error_text,
+      cv::Point(margin, margin + 4 * line_height),
       cv::FONT_HERSHEY_SIMPLEX,
       0.65,
-      cv::Scalar(255, 255, 255),
+      fine_recent ? (in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 220, 255)) :
+      cv::Scalar(180, 180, 180),
       2);
+    cv::putText(
+      frame,
+      range_text,
+      cv::Point(margin, margin + 5 * line_height + 2),
+      cv::FONT_HERSHEY_SIMPLEX,
+      0.65,
+      fine_recent ? (in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 80, 255)) :
+      cv::Scalar(180, 180, 180),
+      2);
+  }
+
+  static std::string formatFixed(double value)
+  {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1) << value;
+    return stream.str();
+  }
+
+  static std::string formatSigned(double value)
+  {
+    std::ostringstream stream;
+    if (value >= 0.0) {
+      stream << '+';
+    }
+    stream << std::fixed << std::setprecision(1) << value;
+    return stream.str();
   }
 
   void resizeForDisplay(cv::Mat & frame) const
@@ -156,12 +229,19 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr candidate_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr barcode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
   std::string window_name_;
   int display_width_{960};
   int candidate_value_{0};
   int stable_value_{0};
+  double fine_x_px_{0.0};
+  double fine_y_px_{0.0};
+  double target_offset_x_px_{0.0};
+  double target_offset_y_px_{0.0};
+  double pixel_deadzone_{5.0};
   rclcpp::Time candidate_stamp_;
   rclcpp::Time stable_stamp_;
+  rclcpp::Time fine_stamp_;
 };
 
 }  // namespace tasks

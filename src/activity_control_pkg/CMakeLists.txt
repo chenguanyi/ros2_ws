@@ -18,6 +18,7 @@ find_package(angles REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZBAR REQUIRED zbar)
+pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 
 add_library(mission_core SHARED
   src/core/aux_controller.cpp
@@ -76,7 +77,13 @@ endif()
 add_executable(warehouse_inventory_task_node
   src/tasks/warehouse_inventory_task_node.cpp
 )
-target_link_libraries(warehouse_inventory_task_node mission_core)
+target_include_directories(warehouse_inventory_task_node PRIVATE
+  ${JSONCPP_INCLUDE_DIRS}
+)
+target_link_libraries(warehouse_inventory_task_node
+  mission_core
+  ${JSONCPP_LIBRARIES}
+)
 ament_target_dependencies(warehouse_inventory_task_node
   rclcpp
   std_msgs
