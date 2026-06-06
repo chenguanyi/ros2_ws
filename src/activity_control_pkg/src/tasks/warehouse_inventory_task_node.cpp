@@ -366,21 +366,18 @@ public:
     const auto mode_text = declare_parameter("mission_mode", std::string("inventory"));
     mission_mode_ = parseMissionMode(mode_text);
     timer_period_sec_ = declare_parameter("timer_period_sec", 0.05);
-    mode_select_grace_sec_ = declare_parameter("mode_select_grace_sec", 0.5);
     barcode_topic_ =
       declare_parameter("barcode_topic", std::string("/warehouse_inventory/barcode_value"));
     fine_data_topic_ = declare_parameter("fine_data_topic", std::string("/fine_data"));
     ground_mode_topic_ = declare_parameter("ground_mode_topic", std::string("/d_task/mode"));
     ground_route_topic_ = declare_parameter("ground_route_topic", std::string("/d_task/route"));
+    st_ready_topic_ = declare_parameter("st_ready_topic", std::string("/is_st_ready"));
     d_task_qr_id_topic_ = declare_parameter("d_task_qr_id_topic", std::string("/d_task/qr_id"));
     d_task_status_topic_ =
       declare_parameter("d_task_status_topic", std::string("/d_task/status"));
 
     if (timer_period_sec_ <= 0.0) {
       throw std::runtime_error("timer_period_sec must be > 0.");
-    }
-    if (mode_select_grace_sec_ < 0.0) {
-      throw std::runtime_error("mode_select_grace_sec must be >= 0.");
     }
 
     log_dir_ = findLogDir();
@@ -432,12 +429,15 @@ public:
       ground_route_topic_,
       rclcpp::QoS(10).reliable(),
       std::bind(&WarehouseInventoryTaskNode::groundRouteCallback, this, std::placeholders::_1));
+    st_ready_sub_ = create_subscription<std_msgs::msg::UInt8>(
+      st_ready_topic_,
+      durable_qos,
+      std::bind(&WarehouseInventoryTaskNode::stReadyCallback, this, std::placeholders::_1));
 
     publishRoute(publishable_route_);
 
     phase_ = mission_mode_ == MissionMode::TARGET ?
       MissionPhase::WAIT_TARGET_BARCODE : MissionPhase::WAIT_MODE;
-    mode_select_deadline_ = now() + rclcpp::Duration::from_seconds(mode_select_grace_sec_);
     aux_.setAll(0, 0, 0);
     setVisualTakeover(false);
     flight_.publishActiveController(3);
@@ -450,13 +450,13 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Warehouse inventory task ready: mode=%s, route_steps=%zu, safety_clearance=%.1fcm, "
-      "mode_topic=%s route_topic=%s grace=%.2fs.",
+      "mode_topic=%s route_topic=%s st_ready_topic=%s.",
       mission_mode_ == MissionMode::TARGET ? "target" : "inventory",
       active_steps_.size(),
       kScanClearanceCm,
       ground_mode_topic_.c_str(),
       ground_route_topic_.c_str(),
-      mode_select_grace_sec_);
+      st_ready_topic_.c_str());
   }
 
 private:
@@ -939,6 +939,7 @@ private:
         << "\"mode_value\":" << (mission_mode_ == MissionMode::TARGET ? 1 : 0) << ','
         << "\"phase\":\"" << phaseName(phase_) << "\","
         << "\"locked\":" << (mission_locked_ ? "true" : "false") << ','
+        << "\"st_ready\":" << (st_ready_received_ ? "true" : "false") << ','
         << "\"target_id\":" << target_id_ << ','
         << "\"route_valid\":" << (ground_route_valid_ ? "true" : "false") << ','
         << "\"route_loaded\":" << (ground_route_loaded_ ? "true" : "false") << ','
@@ -963,6 +964,7 @@ private:
   bool modeSwitchAllowed() const
   {
     return !mission_locked_ &&
+           !st_ready_received_ &&
            (phase_ == MissionPhase::WAIT_MODE ||
             phase_ == MissionPhase::WAIT_STATE ||
             phase_ == MissionPhase::WAIT_TARGET_BARCODE ||
@@ -981,7 +983,7 @@ private:
     active_steps_ = planBestInventoryRoute();
     publishable_route_ = routeWithLanding(active_steps_);
     publishRoute(publishable_route_);
-    phase_ = MissionPhase::WAIT_STATE;
+    phase_ = st_ready_received_ ? MissionPhase::WAIT_STATE : MissionPhase::WAIT_MODE;
     RCLCPP_INFO(get_logger(), "D task mode set to inventory by %s.", reason.c_str());
     logEvent("mode_inventory", "", 0, reason);
     publishDTaskStatus("mode_inventory_" + reason);
@@ -1012,9 +1014,9 @@ private:
     if (!modeSwitchAllowed()) {
       RCLCPP_WARN(
         get_logger(),
-        "Ignored /d_task/mode=%u because mission is locked or not selectable.",
+        "Ignored /d_task/mode=%u because mission is locked, ST ready was received, or phase is not selectable.",
         static_cast<unsigned>(msg->data));
-      publishDTaskStatus("mode_ignored_locked");
+      publishDTaskStatus(st_ready_received_ ? "mode_ignored_st_ready" : "mode_ignored_locked");
       return;
     }
 
@@ -1197,11 +1199,32 @@ private:
     publishDTaskStatus("ground_route_loaded_" + reason);
   }
 
+  void stReadyCallback(const std_msgs::msg::UInt8::SharedPtr msg)
+  {
+    if (msg->data == 0U || st_ready_received_) {
+      return;
+    }
+
+    st_ready_received_ = true;
+    RCLCPP_INFO(get_logger(), "Received ST ready on %s. Mode selection is now locked.", st_ready_topic_.c_str());
+    logEvent(
+      "st_ready_received",
+      target_slot_ ? target_slot_->coord : "",
+      target_id_,
+      mission_mode_ == MissionMode::TARGET ? "target_mode_locked" : "inventory_mode_locked");
+
+    if (mission_mode_ == MissionMode::INVENTORY && phase_ == MissionPhase::WAIT_MODE) {
+      phase_ = MissionPhase::WAIT_STATE;
+    }
+
+    publishDTaskStatus("st_ready_received");
+  }
+
   void groundRouteCallback(const std_msgs::msg::String::SharedPtr msg)
   {
     if (!modeSwitchAllowed()) {
-      RCLCPP_WARN(get_logger(), "Ignored /d_task/route because mission is locked.");
-      publishDTaskStatus("route_ignored_locked");
+      RCLCPP_WARN(get_logger(), "Ignored /d_task/route because mission is locked or ST ready was received.");
+      publishDTaskStatus(st_ready_received_ ? "route_ignored_st_ready" : "route_ignored_locked");
       return;
     }
 
@@ -1324,7 +1347,7 @@ private:
         processWaitGroundRoute();
         break;
       case MissionPhase::WAIT_STATE:
-        if (flight_.hasState()) {
+        if (readyToStartMission()) {
           startMission();
         }
         break;
@@ -1367,12 +1390,11 @@ private:
       return;
     }
 
-    const auto now_time = now();
-    if (now_time >= mode_select_deadline_) {
+    if (st_ready_received_) {
       phase_ = MissionPhase::WAIT_STATE;
-      RCLCPP_INFO(get_logger(), "No /d_task/mode=1 received; starting default inventory task.");
-      logEvent("mode_default_inventory", "", 0, "grace_timeout");
-      publishDTaskStatus("default_inventory_grace_timeout");
+      RCLCPP_INFO(get_logger(), "ST ready received; starting default inventory when flight state is available.");
+      logEvent("mode_default_inventory", "", 0, "st_ready");
+      publishDTaskStatus("default_inventory_st_ready");
       return;
     }
 
@@ -1380,9 +1402,29 @@ private:
       get_logger(),
       *get_clock(),
       1000,
-      "Waiting %.2fs for optional /d_task/mode=1 before default inventory.",
-      (mode_select_deadline_ - now_time).seconds());
-    publishDTaskStatusThrottled("waiting_mode_grace");
+      "Waiting for /is_st_ready. /d_task/mode can still select requirement 1 or 2.");
+    publishDTaskStatusThrottled("waiting_st_ready_or_mode");
+  }
+
+  bool readyToStartMission()
+  {
+    if (!st_ready_received_) {
+      publishDTaskStatusThrottled("waiting_st_ready");
+      return false;
+    }
+    if (!flight_.hasState()) {
+      publishDTaskStatusThrottled("waiting_flight_state");
+      return false;
+    }
+    if (active_steps_.empty()) {
+      publishDTaskStatusThrottled("waiting_active_route");
+      return false;
+    }
+    if (mission_mode_ == MissionMode::TARGET && !ground_route_loaded_) {
+      publishDTaskStatusThrottled("waiting_ground_route_loaded");
+      return false;
+    }
+    return true;
   }
 
   void processWaitTargetBarcode()
@@ -1907,16 +1949,17 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr query_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr ground_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr ground_route_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr st_ready_sub_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
 
   MissionMode mission_mode_{MissionMode::INVENTORY};
   MissionPhase phase_{MissionPhase::WAIT_MODE};
   double timer_period_sec_{0.05};
-  double mode_select_grace_sec_{0.5};
   std::string barcode_topic_;
   std::string fine_data_topic_;
   std::string ground_mode_topic_;
   std::string ground_route_topic_;
+  std::string st_ready_topic_;
   std::string d_task_qr_id_topic_;
   std::string d_task_status_topic_;
   std::string log_dir_;
@@ -1945,10 +1988,10 @@ private:
   rclcpp::Time last_fine_stamp_;
   rclcpp::Time scan_start_stamp_;
   rclcpp::Time action_stamp_;
-  rclcpp::Time mode_select_deadline_;
   rclcpp::Time last_status_pub_stamp_;
   bool visual_takeover_enabled_{false};
   bool mission_locked_{false};
+  bool st_ready_received_{false};
   bool ground_route_valid_{false};
   bool ground_route_loaded_{false};
 };

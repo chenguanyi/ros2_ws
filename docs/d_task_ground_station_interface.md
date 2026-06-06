@@ -4,8 +4,9 @@ This document describes the ROS 2 contract between the drone and the ground
 station for D task warehouse inventory.
 
 The drone side is `warehouse_inventory_task_node`. If the ground station does
-not publish a mode command, the drone defaults to requirement 1 inventory.
-Requirement 2 is selected before takeoff with `/d_task/mode = 1`.
+not publish a mode command before STM32 ready, the drone defaults to
+requirement 1 inventory. Requirement 2 is selected before STM32 ready with
+`/d_task/mode = 1`.
 
 ## Sequences
 
@@ -13,9 +14,9 @@ Requirement 2 is selected before takeoff with `/d_task/mode = 1`.
 
 ```text
 drone launch starts
-drone waits mode_select_grace_sec for optional /d_task/mode=1
-no mode command arrives
-drone starts inventory route
+drone waits for /is_st_ready while accepting optional /d_task/mode commands
+no mode command arrives before /is_st_ready
+drone starts inventory route after /is_st_ready and valid flight state
 drone publishes scan results during flight
 drone publishes /mission_complete after landing
 ```
@@ -31,24 +32,26 @@ Ground station subscriptions used in this mode:
 ### Requirement 2: target inventory
 
 ```text
-ground station publishes /d_task/mode = 1 before drone takeoff
+ground station publishes /d_task/mode = 1 before /is_st_ready
 drone waits for side-camera QR recognition
 drone publishes /d_task/qr_id and /warehouse_inventory/target_id
 ground station plans route from the QR id and its current inventory table
-ground station publishes /d_task/route
-drone validates route JSON, takes off, flies the route, scans target, returns, lands
+ground station publishes /d_task/route before /is_st_ready
+drone validates route JSON and waits for /is_st_ready
+after /is_st_ready and valid flight state, drone takes off, flies the route, scans target, returns, lands
 drone publishes /mission_complete
 ```
 
-After the drone has started takeoff, new `/d_task/mode` and `/d_task/route`
+After `/is_st_ready` has been received, new `/d_task/mode` and `/d_task/route`
 messages are ignored. The ignore reason is reported on `/d_task/status`.
 
 ## Topics
 
 | Topic | Direction | Type | QoS suggestion | Meaning |
 | --- | --- | --- | --- | --- |
-| `/d_task/mode` | ground -> drone | `std_msgs/UInt8` | reliable, depth 10 | `1` selects requirement 2 before takeoff. `0` keeps requirement 1. Other values are ignored. |
-| `/d_task/route` | ground -> drone | `std_msgs/String` | reliable, depth 10 | Requirement 2 route JSON. Must be sent after receiving the QR id. |
+| `/d_task/mode` | ground -> drone | `std_msgs/UInt8` | reliable, depth 10 | `1` selects requirement 2 before `/is_st_ready`. `0` keeps requirement 1. Other values are ignored. |
+| `/d_task/route` | ground -> drone | `std_msgs/String` | reliable, depth 10 | Requirement 2 route JSON. Must be sent after receiving the QR id and before `/is_st_ready`. |
+| `/is_st_ready` | STM32 bridge -> drone | `std_msgs/UInt8` | reliable, transient local, depth 1 | `1` closes the mode/route selection window and allows the selected mission to start when ready. |
 | `/d_task/qr_id` | drone -> ground | `std_msgs/Int32` | reliable, transient local, depth 1 | QR id recognized by the drone before requirement 2 takeoff. Positive integer only. |
 | `/d_task/status` | drone -> ground | `std_msgs/String` | reliable, transient local, depth 1 | Drone state JSON for UI/debugging. |
 | `/warehouse_inventory/target_id` | drone -> ground | `std_msgs/Int32` | reliable, transient local, depth 1 | Compatibility copy of `/d_task/qr_id`. |
@@ -108,6 +111,7 @@ Example:
   "mode_value": 1,
   "phase": "WAIT_GROUND_ROUTE",
   "locked": false,
+  "st_ready": false,
   "target_id": 7,
   "route_valid": false,
   "route_loaded": false,
@@ -123,6 +127,8 @@ Fields:
 - `mode_value`: `0` for requirement 1, `1` for requirement 2.
 - `phase`: internal drone phase, useful for UI and debugging.
 - `locked`: `true` after takeoff has started; mode/route updates are ignored.
+- `st_ready`: `true` after the drone receives `/is_st_ready = 1`; mode/route
+  updates are ignored from this point.
 - `target_id`: QR id recognized before requirement 2.
 - `route_valid`: latest `/d_task/route` parsed successfully.
 - `route_loaded`: parsed route has been loaded into the mission state machine.
@@ -142,9 +148,10 @@ Default requirement 1:
 
 ```bash
 ros2 topic echo /d_task/status
+ros2 topic pub --once /is_st_ready std_msgs/msg/UInt8 "{data: 1}"
 ```
 
-Select requirement 2 before takeoff:
+Select requirement 2 before STM32 ready:
 
 ```bash
 ros2 topic pub --once /d_task/mode std_msgs/msg/UInt8 "{data: 1}"
@@ -161,6 +168,12 @@ Publish a target route:
 
 ```bash
 ros2 topic pub --once /d_task/route std_msgs/msg/String "{data: '{\"steps\":[{\"kind\":\"scan\",\"scan\":true,\"coord\":\"A1\",\"x_cm\":15.0,\"y_cm\":75.0,\"z_cm\":140.0,\"yaw_deg\":90.0}]}'}"
+```
+
+Release the selected mission after mode, QR, and route are ready:
+
+```bash
+ros2 topic pub --once /is_st_ready std_msgs/msg/UInt8 "{data: 1}"
 ```
 
 Watch route and scan feedback:

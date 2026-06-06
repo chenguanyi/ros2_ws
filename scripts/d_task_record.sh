@@ -99,8 +99,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
+  set +u
   # shellcheck source=/dev/null
   source "${WORKSPACE_ROOT}/install/setup.bash"
+  set -u
 fi
 
 TOPICS=("${DEFAULT_TOPICS[@]}")

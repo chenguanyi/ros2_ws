@@ -223,18 +223,9 @@ private:
       return;
     }
 
-    cv::Point2d qr_center(
+    const cv::Point2d qr_center(
       static_cast<double>(box.x) + static_cast<double>(box.width) * 0.5,
       static_cast<double>(box.y) + static_cast<double>(box.height) * 0.5);
-    if (!points.empty()) {
-      qr_center = cv::Point2d(0.0, 0.0);
-      for (const auto & point : points) {
-        qr_center.x += static_cast<double>(point.x);
-        qr_center.y += static_cast<double>(point.y);
-      }
-      qr_center.x /= static_cast<double>(points.size());
-      qr_center.y /= static_cast<double>(points.size());
-    }
 
     cv::rectangle(image, box, cv::Scalar(0, 255, 0), 3);
     if (points.size() >= 4U) {
@@ -376,25 +367,26 @@ private:
       return;
     }
 
-    double sum_x = 0.0;
-    double sum_y = 0.0;
+    double center_x = static_cast<double>(image.cols) * 0.5;
+    double center_y = static_cast<double>(image.rows) * 0.5;
     const int point_count = symbol.get_location_size();
     if (point_count > 0) {
+      std::vector<cv::Point> points;
+      points.reserve(point_count);
       for (int i = 0; i < point_count; ++i) {
-        sum_x += static_cast<double>(symbol.get_location_x(i));
-        sum_y += static_cast<double>(symbol.get_location_y(i));
+        points.emplace_back(symbol.get_location_x(i), symbol.get_location_y(i));
       }
-      sum_x /= static_cast<double>(point_count);
-      sum_y /= static_cast<double>(point_count);
-    } else {
-      sum_x = static_cast<double>(image.cols) * 0.5;
-      sum_y = static_cast<double>(image.rows) * 0.5;
+      const cv::Rect box = cv::boundingRect(points) & cv::Rect(0, 0, image.cols, image.rows);
+      if (!box.empty()) {
+        center_x = static_cast<double>(box.x) + static_cast<double>(box.width) * 0.5;
+        center_y = static_cast<double>(box.y) + static_cast<double>(box.height) * 0.5;
+      }
     }
 
     std_msgs::msg::Int32MultiArray msg;
     msg.data = {
-      static_cast<int>(std::lround(sum_x - static_cast<double>(image.cols) * 0.5)),
-      static_cast<int>(std::lround(sum_y - static_cast<double>(image.rows) * 0.5)),
+      static_cast<int>(std::lround(center_x - static_cast<double>(image.cols) * 0.5)),
+      static_cast<int>(std::lround(center_y - static_cast<double>(image.rows) * 0.5)),
     };
     fine_data_pub_->publish(msg);
   }

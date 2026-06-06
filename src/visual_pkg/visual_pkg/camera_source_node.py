@@ -17,6 +17,7 @@ class CameraSourceNode(Node):
         self.declare_parameter("width", 640)
         self.declare_parameter("height", 480)
         self.declare_parameter("camera_fps", 60)
+        self.declare_parameter("fourcc", "")
         self.declare_parameter("publish_fps", 30.0)
         self.declare_parameter("retry_period_sec", 1.0)
         self.declare_parameter("frame_id", "camera")
@@ -27,6 +28,7 @@ class CameraSourceNode(Node):
         self._width = int(self.get_parameter("width").value)
         self._height = int(self.get_parameter("height").value)
         self._camera_fps = int(self.get_parameter("camera_fps").value)
+        self._fourcc = str(self.get_parameter("fourcc").value).strip().upper()
         publish_fps = float(self.get_parameter("publish_fps").value)
         self._retry_period = Duration(seconds=float(self.get_parameter("retry_period_sec").value))
         self._frame_id = str(self.get_parameter("frame_id").value)
@@ -46,7 +48,8 @@ class CameraSourceNode(Node):
 
         self.get_logger().info(
             f"CameraSourceNode publishing {image_topic}: camera={self._camera_label()} "
-            f"{self._width}x{self._height}@{self._camera_fps}, publish_fps={publish_fps:.1f}"
+            f"{self._width}x{self._height}@{self._camera_fps}, fourcc={self._fourcc or 'driver-default'}, "
+            f"publish_fps={publish_fps:.1f}"
         )
 
     def _camera_label(self) -> str:
@@ -62,11 +65,29 @@ class CameraSourceNode(Node):
         if not cap.isOpened():
             return False
 
+        if self._fourcc:
+            if len(self._fourcc) != 4:
+                self.get_logger().warn(
+                    f"Ignoring invalid fourcc '{self._fourcc}'; expected exactly 4 characters."
+                )
+            else:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self._fourcc))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         cap.set(cv2.CAP_PROP_FPS, self._camera_fps)
         self._cap = cap
+        self._log_actual_camera_format(cap)
         return True
+
+    def _log_actual_camera_format(self, cap: cv2.VideoCapture) -> None:
+        fourcc_value = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc = "".join(chr((fourcc_value >> (8 * i)) & 0xFF) for i in range(4))
+        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        self.get_logger().info(
+            f"Camera actual format: {width:.0f}x{height:.0f}@{fps:.1f}, fourcc={fourcc!r}"
+        )
 
     def _timer_callback(self) -> None:
         if not self._camera_ok or self._cap is None:

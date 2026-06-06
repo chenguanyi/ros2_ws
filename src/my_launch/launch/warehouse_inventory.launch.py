@@ -16,9 +16,10 @@ from launch_ros.substitutions import FindPackageShare
 # =============================================================================
 # D task warehouse inventory.
 # Fixed geometry and fixed right-side camera fine-control mapping live in code.
-# Default path is requirement 1 inventory. Requirement 2 is selected before
-# takeoff by publishing std_msgs/UInt8 {data: 1} on /d_task/mode. The drone
-# then publishes /d_task/qr_id and waits for the ground station route JSON.
+# Default path is requirement 1 inventory. Requirement 2 can be selected until
+# STM32 ready arrives by publishing std_msgs/UInt8 {data: 1} on /d_task/mode.
+# The drone then publishes /d_task/qr_id and waits for the ground station route
+# JSON before /is_st_ready is received.
 # =============================================================================
 
 BOTTOM_CAMERA_DEVICE = "/dev/v4l/by-id/usb-DECXIN_CAMERA_DECXIN_CAMERA_01.00.00-video-index0"
@@ -29,8 +30,8 @@ BARCODE_TOPIC = "/warehouse_inventory/barcode_value"
 BARCODE_CANDIDATE_TOPIC = "/warehouse_inventory/barcode_candidate"
 BARCODE_OVERLAY_TOPIC = "/warehouse_inventory/barcode_overlay"
 FINE_DATA_TOPIC = "/fine_data"
-VISUAL_TARGET_OFFSET_X_PX = -75.0
-VISUAL_TARGET_OFFSET_Y_PX = 20.0
+VISUAL_TARGET_OFFSET_X_PX = 0.0
+VISUAL_TARGET_OFFSET_Y_PX = -20.0
 VISUAL_PIXEL_DEADZONE = 5.0
 
 
@@ -67,7 +68,6 @@ def generate_launch_description() -> LaunchDescription:
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
-    mode_select_grace_sec = LaunchConfiguration("mode_select_grace_sec")
     task_log_dir = _task_log_dir("warehouse_inventory")
 
     task_params = {
@@ -81,9 +81,9 @@ def generate_launch_description() -> LaunchDescription:
         "yaw_tolerance_deg": 3.0,
         "log_waypoint_targets": False,
         "timer_period_sec": 0.05,
-        "mode_select_grace_sec": mode_select_grace_sec,
         "barcode_topic": BARCODE_TOPIC,
         "fine_data_topic": FINE_DATA_TOPIC,
+        "st_ready_topic": "/is_st_ready",
     }
 
     return LaunchDescription([
@@ -93,11 +93,6 @@ def generate_launch_description() -> LaunchDescription:
             "mission_mode",
             default_value="inventory",
             description="Initial D task mode. Usually leave as inventory and use /d_task/mode.",
-        ),
-        DeclareLaunchArgument(
-            "mode_select_grace_sec",
-            default_value="20.0",
-            description="Seconds to wait for optional /d_task/mode=1 before default inventory.",
         ),
         DeclareLaunchArgument(
             "use_rviz",
@@ -180,6 +175,7 @@ def generate_launch_description() -> LaunchDescription:
                 "width": 640,
                 "height": 480,
                 "camera_fps": 30,
+                "fourcc": "YUYV",
                 "publish_fps": 30.0,
                 "frame_id": "warehouse_side_camera",
                 "image_topic": SIDE_IMAGE_TOPIC,
