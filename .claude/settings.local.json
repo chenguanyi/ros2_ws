@@ -9,7 +9,14 @@
       "Bash(/home/ubuntu/remote-board-dev/scripts/rsync-to-remote.sh *)",
       "Bash(/home/ubuntu/remote-board-dev/scripts/remote-build.sh *)",
       "Bash(/home/ubuntu/remote-board-dev/scripts/remote-run.sh *)",
-      "Bash(chmod +x /home/ubuntu/remote-board-dev/scripts/push-remote.sh)"
+      "Bash(chmod +x /home/ubuntu/remote-board-dev/scripts/push-remote.sh)",
+      "Skill(update-config)",
+      "Bash(python3 *)",
+      "Bash(git -C /home/ubuntu/remote-board-dev diff -- my_launch/launch/diansai_first.launch.py CONTEXT.md)",
+      "Bash(git -C /home/ubuntu/remote-board-dev status --short)",
+      "Bash(git -C /home/ubuntu/remote-board-dev diff --stat -- CONTEXT.md my_launch/launch/diansai_first.launch.py)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/push-remote.sh *)",
+      "Bash(rg *)"
     ]
   }
 }
