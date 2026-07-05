@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh *)",
+      "Bash(chmod +x /home/ubuntu/remote-board-dev/scripts/rsync-from-remote.sh)",
+      "Bash(bash -n /home/ubuntu/remote-board-dev/scripts/*.sh)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/rsync-from-remote.sh *)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/rsync-to-remote.sh --dry-run)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/rsync-to-remote.sh *)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/remote-build.sh *)",
+      "Bash(/home/ubuntu/remote-board-dev/scripts/remote-run.sh *)",
+      "Bash(chmod +x /home/ubuntu/remote-board-dev/scripts/push-remote.sh)"
+    ]
+  }
+}
