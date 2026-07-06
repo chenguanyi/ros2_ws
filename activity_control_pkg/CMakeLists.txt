@@ -59,6 +59,25 @@ else()
   target_compile_options(fixed_waypoint_task_node PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(diansai_first_task_node
+  src/tasks/diansai_first/diansai_first_task_node.cpp
+)
+target_link_libraries(diansai_first_task_node
+  mission_core
+  ${OpenCV_LIBS}
+)
+ament_target_dependencies(diansai_first_task_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  cv_bridge
+)
+if(MSVC)
+  target_compile_options(diansai_first_task_node PRIVATE /W4)
+else()
+  target_compile_options(diansai_first_task_node PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(plant_protection_task_node
   src/tasks/plant_protection_task_node.cpp
 )
@@ -143,10 +162,16 @@ install(TARGETS mission_core
 
 install(TARGETS
   fixed_waypoint_task_node
+  diansai_first_task_node
   plant_protection_task_node
   warehouse_inventory_task_node
   barcode_reader_node
   side_camera_viewer_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/diansai_first/alignment_check_support.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
