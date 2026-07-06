@@ -146,12 +146,9 @@ class AlignmentCheckSupport(Node):
                 err_x = int(self.latest_fine_data.data[0])
                 err_y = int(self.latest_fine_data.data[1])
                 fine_text = f'error px: x={err_x:+d}, y={err_y:+d}'
-                if err_x >= 0 and err_y >= 0:
-                    target_center = (center[0] + err_x, center[1] + err_y)
-                    cv2.circle(overlay, target_center, 12, (0, 0, 255), 2)
-                    cv2.line(overlay, center, target_center, (0, 255, 255), 2)
-                else:
-                    fine_text = 'error px: target not detected'
+                target_center = (center[0] + err_x, center[1] + err_y)
+                cv2.circle(overlay, target_center, 12, (0, 0, 255), 2)
+                cv2.line(overlay, center, target_center, (0, 255, 255), 2)
 
             vx, vy, vz, vyaw = self.velocity_values()
             velocity_text = f'pid velocity: vx={vx:+.2f}, vy={vy:+.2f}, vz={vz:+.2f}, yaw={vyaw:+.2f}'

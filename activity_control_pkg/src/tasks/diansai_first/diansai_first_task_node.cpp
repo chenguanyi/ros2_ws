@@ -143,9 +143,7 @@ private:
     GOTO_PICKUP_FIXED,
     ALIGN_PICKUP,
     DESCEND_PICKUP,
-    PICKUP_ARM_DOWN,
-    PICKUP_MAGNET_ON,
-    PICKUP_ARM_UP,
+    PICKUP_HOLD,
     CLIMB_CHECK,
     CHECK_MARKER,
     GOTO_ENDPOINT,
@@ -178,6 +176,8 @@ private:
     max_pickup_attempts_ = declare_parameter("max_pickup_attempts", 3);
     align_timeout_sec_ = declare_parameter("align_timeout_sec", 8.0);
     align_deadzone_px_ = declare_parameter("align_deadzone_px", 30);
+    align_target_offset_x_px_ = declare_parameter("align_target_offset_x_px", 0.0);
+    align_target_offset_y_px_ = declare_parameter("align_target_offset_y_px", 0.0);
     align_stable_sec_ = declare_parameter("align_stable_sec", 0.5);
     post_pickup_check_sec_ = declare_parameter("post_pickup_check_sec", 1.0);
     post_pickup_visible_stable_sec_ = declare_parameter("post_pickup_visible_stable_sec", 0.3);
@@ -248,10 +248,10 @@ private:
     last_detection_circularity_ = detection.circularity;
 
     if (detection.found) {
-      const double image_center_x = static_cast<double>(bgr.cols) * 0.5;
-      const double image_center_y = static_cast<double>(bgr.rows) * 0.5;
-      last_error_x_px_ = detection.center.x - image_center_x;
-      last_error_y_px_ = detection.center.y - image_center_y;
+      const double target_x = static_cast<double>(bgr.cols) * 0.5 + align_target_offset_x_px_;
+      const double target_y = static_cast<double>(bgr.rows) * 0.5 + align_target_offset_y_px_;
+      last_error_x_px_ = detection.center.x - target_x;
+      last_error_y_px_ = target_y - detection.center.y;
       last_center_x_px_ = detection.center.x;
       last_center_y_px_ = detection.center.y;
       publishFineData(last_error_x_px_, last_error_y_px_);
@@ -353,8 +353,8 @@ private:
   void drawDebugView(cv::Mat & image, const RedCircleDetection & detection) const
   {
     const cv::Point target_point(
-      static_cast<int>(std::lround(static_cast<double>(image.cols) * 0.5)),
-      static_cast<int>(std::lround(static_cast<double>(image.rows) * 0.5)));
+      static_cast<int>(std::lround(static_cast<double>(image.cols) * 0.5 + align_target_offset_x_px_)),
+      static_cast<int>(std::lround(static_cast<double>(image.rows) * 0.5 + align_target_offset_y_px_)));
     const int deadzone = std::max(0, align_deadzone_px_);
     cv::Rect target_range(
       target_point.x - deadzone,
@@ -373,8 +373,8 @@ private:
       const cv::Point marker_point(
         static_cast<int>(std::lround(detection.center.x)),
         static_cast<int>(std::lround(detection.center.y)));
-      const double error_x = detection.center.x - static_cast<double>(image.cols) * 0.5;
-      const double error_y = detection.center.y - static_cast<double>(image.rows) * 0.5;
+      const double error_x = detection.center.x - static_cast<double>(target_point.x);
+      const double error_y = static_cast<double>(target_point.y) - detection.center.y;
       const bool in_range = std::abs(error_x) <= deadzone && std::abs(error_y) <= deadzone;
       status = in_range ? "LOCK RANGE" : "ALIGN";
       status_color = in_range ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 220, 255);
@@ -413,12 +413,8 @@ private:
         return "ALIGN_PICKUP";
       case Phase::DESCEND_PICKUP:
         return "DESCEND_PICKUP";
-      case Phase::PICKUP_ARM_DOWN:
-        return "PICKUP_ARM_DOWN";
-      case Phase::PICKUP_MAGNET_ON:
-        return "PICKUP_MAGNET_ON";
-      case Phase::PICKUP_ARM_UP:
-        return "PICKUP_ARM_UP";
+      case Phase::PICKUP_HOLD:
+        return "PICKUP_HOLD";
       case Phase::CLIMB_CHECK:
         return "CLIMB_CHECK";
       case Phase::CHECK_MARKER:
@@ -602,32 +598,16 @@ private:
         if (!flight_.isReached()) {
           return;
         }
-        aux_.setAll(1, 0, 0);
-        goToPhase(Phase::PICKUP_ARM_DOWN, "已下降到取物高度，放下机械臂。");
+        goToPhase(Phase::PICKUP_HOLD, "已下降到取物高度，保持机械臂和磁铁吸附。");
         return;
 
-      case Phase::PICKUP_ARM_DOWN:
-        if (!waitTimed(pickup_hold_sec_)) {
-          return;
-        }
-        aux_.setAll(1, 1, 0);
-        goToPhase(Phase::PICKUP_MAGNET_ON, "取物机械臂保持完成，开启磁铁吸附。");
-        return;
-
-      case Phase::PICKUP_MAGNET_ON:
+      case Phase::PICKUP_HOLD:
         if (!waitTimed(pickup_hold_sec_)) {
           return;
         }
         aux_.setAll(0, 1, 0);
-        goToPhase(Phase::PICKUP_ARM_UP, "磁铁吸附保持完成，收回机械臂。");
-        return;
-
-      case Phase::PICKUP_ARM_UP:
-        if (!waitTimed(pickup_hold_sec_)) {
-          return;
-        }
         flight_.goTo(WaypointTarget{descent_target_.x_cm, descent_target_.y_cm, pickup_.z_cm, pickup_.yaw_deg});
-        goToPhase(Phase::CLIMB_CHECK, "取物动作完成，爬升到检查高度。");
+        goToPhase(Phase::CLIMB_CHECK, "取物保持完成，收回机械臂并爬升到检查高度。");
         return;
 
       case Phase::CLIMB_CHECK:
@@ -710,8 +690,10 @@ private:
       if ((stamp - stable_align_start_).seconds() >= align_stable_sec_) {
         setVisualTakeover(false);
         lockDescentTargetFromCurrentPoseOrFallback(true);
+        RCLCPP_INFO(get_logger(), "视觉对准稳定，发送 arm=1 magnet=1 signal=0 后下降取物。");
+        aux_.setAll(1, 1, 0);
         flight_.goTo(descent_target_);
-        goToPhase(Phase::DESCEND_PICKUP, "视觉对准稳定，关闭视觉接管并下降取物。");
+        goToPhase(Phase::DESCEND_PICKUP, "视觉对准稳定，放下机械臂并开启磁铁，下降取物。");
         return;
       }
     } else {
@@ -721,8 +703,10 @@ private:
     if (align_start_.nanoseconds() != 0 && (stamp - align_start_).seconds() >= align_timeout_sec_) {
       setVisualTakeover(false);
       lockDescentTargetFromCurrentPoseOrFallback(false);
+      RCLCPP_INFO(get_logger(), "视觉对准超时，发送 arm=1 magnet=1 signal=0 后下降取物。");
+      aux_.setAll(1, 1, 0);
       flight_.goTo(descent_target_);
-      goToPhase(Phase::DESCEND_PICKUP, "视觉对准超时，继续执行本次取物下降。");
+      goToPhase(Phase::DESCEND_PICKUP, "视觉对准超时，放下机械臂并开启磁铁，继续下降取物。");
       return;
     }
 
@@ -800,6 +784,8 @@ private:
   int max_pickup_attempts_{3};
   double align_timeout_sec_{8.0};
   int align_deadzone_px_{30};
+  double align_target_offset_x_px_{0.0};
+  double align_target_offset_y_px_{0.0};
   double align_stable_sec_{0.5};
   double post_pickup_check_sec_{1.0};
   double post_pickup_visible_stable_sec_{0.3};

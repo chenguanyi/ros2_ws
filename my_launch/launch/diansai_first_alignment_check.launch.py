@@ -25,6 +25,10 @@ BOTTOM_CAMERA_PUBLISH_FPS = 30.0
 BOTTOM_CAMERA_FOURCC = "YUYV"
 
 ALIGN_DEADZONE_PX = 30
+# 视觉抓取固定像素偏差：目标点 = 画面中心 + offset。
+# x 正值表示把对准目标向画面右侧移动；y 正值表示向画面下方移动。
+ALIGN_TARGET_OFFSET_X_PX = 80.0
+ALIGN_TARGET_OFFSET_Y_PX = -100.0
 SHOW_DEBUG_VIEW = True
 
 RED_H1_MIN = 0
@@ -75,6 +79,8 @@ def generate_launch_description() -> LaunchDescription:
         "fine_data_topic": "/fine_data",
         "show_debug_view": SHOW_DEBUG_VIEW,
         "align_deadzone_px": ALIGN_DEADZONE_PX,
+        "align_target_offset_x_px": ALIGN_TARGET_OFFSET_X_PX,
+        "align_target_offset_y_px": ALIGN_TARGET_OFFSET_Y_PX,
         "red_h1_min": RED_H1_MIN,
         "red_h1_max": RED_H1_MAX,
         "red_h2_min": RED_H2_MIN,

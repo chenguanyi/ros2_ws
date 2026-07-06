@@ -32,6 +32,10 @@ PICKUP_HOLD_SEC = 5.0
 DROPOFF_HOLD_SEC = 1.0
 
 ALIGN_DEADZONE_PX = 30
+# 视觉抓取固定像素偏差：目标点 = 画面中心 + offset。
+# x 正值表示把对准目标向画面右侧移动；y 正值表示向画面下方移动。
+ALIGN_TARGET_OFFSET_X_PX = 80.0
+ALIGN_TARGET_OFFSET_Y_PX = -100.0
 ALIGN_STABLE_SEC = 0.5
 ALIGN_TIMEOUT_SEC = 8.0
 MAX_PICKUP_ATTEMPTS = 3
@@ -55,8 +59,8 @@ RED_MIN_AREA = 300.0
 RED_MIN_CIRCULARITY = 0.55
 
 
-# 高度使用 STM32 串口发来的滤波后高度，不启动面阵激光高度节点。
-HEIGHT_SOURCE = "serial_raw"
+# 高度使用面阵激光估计值，避免低空串口高度盲区。
+HEIGHT_SOURCE = "laser_ground"
 
 
 # 底部摄像头必须启用，型号使用原来的地面 DECXIN 摄像头。
@@ -122,6 +126,8 @@ def _diansai_task_params():
         "pickup_hold_sec": PICKUP_HOLD_SEC,
         "dropoff_hold_sec": DROPOFF_HOLD_SEC,
         "align_deadzone_px": ALIGN_DEADZONE_PX,
+        "align_target_offset_x_px": ALIGN_TARGET_OFFSET_X_PX,
+        "align_target_offset_y_px": ALIGN_TARGET_OFFSET_Y_PX,
         "align_stable_sec": ALIGN_STABLE_SEC,
         "align_timeout_sec": ALIGN_TIMEOUT_SEC,
         "max_pickup_attempts": MAX_PICKUP_ATTEMPTS,
@@ -180,6 +186,11 @@ def generate_launch_description() -> LaunchDescription:
                 "height_source": height_source,
                 "forward_height_0x05": forward_height_0x05,
             }.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                _launch_path("laser_array_pkg", "laser_array_ground.launch.py")
+            ),
         ),
         Node(
             package="visual_pkg",

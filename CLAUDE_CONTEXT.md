@@ -2,60 +2,37 @@
 
 ## 项目目标
 
-- 建立一套通用的“本地 WSL 编辑 + rsync 单向同步 + SSH 远端 Linux 开发板编译/运行”的开发模板。
-- 当前项目已切换为：以远端 Orange Pi 的 ROS2 工作区 `/home/orangepi/ros2_ws` 为初始可信源，先拉到本地，再由本地作为源码可信源同步回远端构建/运行。
+- 当前重点：继续消缺电赛第一题 `diansai_first`，保持任务/PID 统一使用 `/height`，由 `uart_to_stm32` 在节点内部选择高度来源并发布 `/height`；继续排查机械臂实际不伸出的问题。
 
 ## 当前状态
 
-- 工作目录：`/home/ubuntu/remote-board-dev`。
-- 已成功 SSH 免密连接：`orangepi@10.249.41.19`，远端主机名 `orangepi5max`。
-- 远端 ROS 环境：`/opt/ros/humble`，`colcon` 位于 `/usr/bin/colcon`。
-- 已从远端 `/home/orangepi/ros2_ws/src` 拉取 ROS2 源码到本地项目根目录。
-- 本地已发现 ROS2 包：
-  - `activity_control_pkg`
-  - `circle_detector`
-  - `laser_array_pkg`
-  - `my_carto_pkg`
-  - `my_launch`
-  - `pid_control_pkg`
-  - `pillar_detector_pkg`
-  - `serial_comm`
-  - `uart_to_stm32`
-  - `visual_pkg`
-- 已新增安全脚本：`scripts/rsync-from-remote.sh`，用于远端到本地 bootstrap，默认不使用 `--delete`。
-- 已更新 `scripts/rsync-to-remote.sh`：
-  - 非 dry-run 推送要求 `LOCAL_SOURCE_IS_CANONICAL=1`。
-  - 排除 `.git/`、`.gitignore`、`.claude/`、`CLAUDE_CONTEXT.md`、swap 文件、`docs/`、`scripts/`、`build/`、`install/`、`log/` 等。
-- 已创建本地私密配置 `scripts/remote.env`：
-  - `REMOTE_SRC_DIR=/home/orangepi/ros2_ws/src`
-  - `REMOTE_WORK_DIR=/home/orangepi/ros2_ws`
-  - `LOCAL_SOURCE_IS_CANONICAL=1`
-  - `REMOTE_BUILD_CMD="source /opt/ros/humble/setup.bash && colcon build --symlink-install"`
-  - `REMOTE_RUN_CMD="source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 pkg list"`
-- 已执行本地到远端 dry-run 和真实同步；没有文件变更、没有删除。
-- 已执行 `scripts/remote-build.sh`，远端 `colcon build --symlink-install` 成功：12 个 packages finished。
-- 已执行 `scripts/remote-run.sh`，smoke command `ros2 pkg list` 成功。
-- 用户确认允许远端 `README.md` 覆盖模板根目录 `README.md`；模板说明主要保留在 `docs/remote-dev.md` 和脚本中。
+- 已确认架构约定：所有任务节点和 PID 控制只消费 `/height`；`height_source` 只用于 `uart_to_stm32` 在 `serial_raw` 与 `laser_ground` 间选择输入，再发布统一 `/height`。
+- 本地 `my_launch/launch/diansai_first.launch.py` 已设置 `HEIGHT_SOURCE = "laser_ground"`，任务参数仍是 `height_topic: "/height"`，并启动 `laser_array_ground.launch.py`。
+- 已将当前 worktree 的 `my_launch/launch/diansai_first.launch.py` 单文件同步到远端 `/home/orangepi/ros2_ws/src/my_launch/launch/diansai_first.launch.py`，并在远端执行 `colcon build --symlink-install --packages-select my_launch` 成功。
+- 已验证远端 source 与 install 空间的 `diansai_first.launch.py` 均为 `HEIGHT_SOURCE = "laser_ground"`。
+- 已短启动正式 launch 验证：最新远端 `uart_to_stm32` 日志打印 `Height source=laser_ground laser_topic=/laser_array/ground_height`；`laser_array_ground_node` 有高度输出；任务节点仍等待/使用 `/height`。
+- 机械臂链路日志边界：任务节点已发布 `arm=1 magnet=1 signal=0`，`uart_to_stm32` 已成功发送 0x33 `[arm=1, magnet=1, signal=0]`。若机械臂仍不动，问题优先怀疑 STM32 协议解析/执行、供电、接线、执行器或 `arm=1` 语义，而不是 ROS 任务或高度架构。
+- 短启动时蓝海雷达出现 `send commands to lidar but no answer`，这是独立 lidar 通信问题，不影响本次高度源验证结论。
 
 ## 重要约定
 
-- 当前从现在起：本地 `/home/ubuntu/remote-board-dev` 是源码可信源。
-- 远端 `/home/orangepi/ros2_ws/src` 是本地源码的镜像，正常开发中不要在远端手工改源码。
-- 同步策略为本地到远端的单向镜像，`rsync-to-remote.sh` 使用 `--delete`，但已经用 `LOCAL_SOURCE_IS_CANONICAL` 做保护。
-- `scripts/remote.env` 是本地私密配置，已由 `.gitignore` 排除，不应提交或同步。
-- ROS2 构建应在远端工作区根目录 `/home/orangepi/ros2_ws` 执行，不是在 `src` 目录执行。
-- `REMOTE_SRC_DIR` 保持窄路径 `/home/orangepi/ros2_ws/src`，不要设为 `/home/orangepi` 或 `/home/orangepi/ros2_ws`。
-- `docs/` 和 `scripts/` 被排除在推送之外，避免把本地开发模板工具同步进远端 ROS2 `src`。
+- `diansai_first` 任务逻辑放在独立任务目录中，复用底层 `WaypointNavigator`、`AuxController`、PID 视觉接管、TF、`/height`、`visual_pkg`。
+- 不把任务流程写入 `pid_control_pkg`、`uart_to_stm32` 或 `visual_pkg`，除非是为共享基础设施增加日志/诊断。
+- 高度架构约定：任务/PID 一律使用 `/height`；不要在任务层或 PID 层直接订阅 `/laser_array/ground_height` 来切换高度源。切源只改 `uart_to_stm32` 的 `height_source` 参数/launch 传参。
+- `arm=1` 放下/伸出，`arm=0` 收起；`magnet=1` 吸附，`magnet=0` 释放。
+- 校准 launch：`ros2 launch my_launch diansai_first_alignment_check.launch.py`（不启动 UART，只测对准和速度方向）。
+- 正式 launch：`ros2 launch my_launch diansai_first.launch.py`。
+- 本地到远端单向镜像；`REMOTE_SRC_DIR` 保持 `/home/orangepi/ros2_ws/src`。
+- 修改哪个 ROS 包就重新编译哪个包。
+- 引用行号前必须核实 `wc -l`；行号超出时立即报告无效。
+- `/push-remote` 同步的是主 checkout（`/home/ubuntu/remote-board-dev/`），不是当前 worktree；改完 worktree 后必须确认推送的是 worktree 文件，或者直接把目标文件 rsync 到远端。
 
 ## 下一步
 
-1. 如果要修改功能代码，直接编辑本地 ROS2 包，然后运行：
-   - `scripts/rsync-to-remote.sh --dry-run`
-   - `scripts/remote-build.sh`
-   - `scripts/remote-run.sh` 或将 `REMOTE_RUN_CMD` 改为实际节点/launch 命令后再运行。
-2. 可根据实际应用把 `scripts/remote.env` 中的 `REMOTE_RUN_CMD` 从 `ros2 pkg list` 替换为真实启动命令，例如 `ros2 launch ...` 或 `ros2 run ...`。
-3. 如果需要同步整个远端 `ros2_ws` 根目录中的 `README.md`、`docs/`、`scripts/`、数据文件等，需要重新设计本地目录布局；当前只管理远端 `ros2_ws/src`。
+1. 单独单测机械臂 UART/STM32/硬件链路：启动 `uart_to_stm32` 后直接发布 `/arm_command` 为 1/0，观察 UART 0x33 日志和机械臂实际动作。
+2. 若 UART 日志仍显示成功发送 0x33 但机械臂不动，转查 STM32 固件解析、协议字段顺序、`arm=1` 极性/语义、接线、供电和执行器。
+3. 如继续跑正式任务，先确认蓝海雷达通信正常，避免 `send commands to lidar but no answer` 影响定位。
 
 ## 最近更新
 
-- 2026-07-05：完成 SSH 免密连接、远端 ROS2 工作区探测、从远端 `ros2_ws/src` 拉取到本地、安全推送 dry-run/真实同步、远端 `colcon build` 和 `ros2 pkg list` smoke run 验证。
+- 2026-07-06：确认并固化 `/height` 统一高度架构；已同步并重建远端 `diansai_first.launch.py`，验证 `uart_to_stm32` 运行时使用 `laser_ground` 发布 `/height`，机械臂问题转入 STM32/硬件链路单测。

@@ -829,9 +829,9 @@ bool UartToStm32::updateAuxStateAndSend(const char * name, std::atomic<std::uint
   slot.store(value);
   const bool ok = sendCombinedAuxControlToSerial();
   if (ok) {
-    RCLCPP_DEBUG(
+    RCLCPP_INFO(
       node_->get_logger(),
-      "Updated %s state=%u and sent combined 0x%02X packet.",
+      "Updated %s state=%u from aux command and sent combined 0x%02X packet.",
       name,
       static_cast<unsigned>(value),
       static_cast<unsigned>(AUX_CONTROL_FRAME_ID));
@@ -867,8 +867,8 @@ bool UartToStm32::sendCombinedAuxControlToSerial()
     return false;
   }
 
-  RCLCPP_DEBUG_THROTTLE(
-    node_->get_logger(), *node_->get_clock(), 1000,
+  RCLCPP_INFO(
+    node_->get_logger(),
     "Sent combined aux control frame 0x%02X: [arm=%u, magnet=%u, signal=%u]",
     static_cast<unsigned>(AUX_CONTROL_FRAME_ID),
     static_cast<unsigned>(data[0]),

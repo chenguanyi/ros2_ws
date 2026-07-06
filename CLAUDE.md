@@ -139,3 +139,13 @@ Follow the existing mission split instead of modifying low-level control package
 4. Put frequently tuned mission parameters at the top of the launch file.
 
 Do not change `pid_control_pkg`, `uart_to_stm32`, or `visual_pkg` just to encode a new competition/task sequence; those packages are shared infrastructure.
+
+## Claude operation notes
+
+- Fresh worktrees do not include uncommitted files from the original checkout; bring needed files in before editing/running.
+- Verify deploy mechanics before relying on them: rsync excludes (`scripts/` vs `/scripts/`), display environment, and required CLIs such as `gh`.
+- Check tool arguments and staged files carefully; avoid invalid Monitor args and generated artifacts (`__pycache__`, `.pyc`).
+- 修改哪个包就编译哪个包；引用行号前必须实查文件。
+- 不用 `cat` 读大文件；禁查改生成/缓存/隐藏目录，除非点名。
+- 行号超出 `wc -l` 结果时，立即报告无效，禁止猜测。
+- 推送前确认源工作区。
