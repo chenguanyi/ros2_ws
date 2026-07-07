@@ -21,6 +21,8 @@ def generate_launch_description() -> LaunchDescription:
     publish_debug_image = LaunchConfiguration("publish_debug_image")
     queue_size = LaunchConfiguration("queue_size")
     log_period_sec = LaunchConfiguration("log_period_sec")
+    fusion_enabled = LaunchConfiguration("fusion_enabled")
+    fusion_iou_threshold = LaunchConfiguration("fusion_iou_threshold")
 
     return LaunchDescription([
         DeclareLaunchArgument("model_path", default_value="", description="[RKNN] .rknn 模型路径，必须传。"),
@@ -32,7 +34,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("input_height", default_value="640", description="[YOLO] 模型输入高度。"),
         DeclareLaunchArgument("num_classes", default_value="0", description="[YOLO] 类别数；0 表示从 classes_path 行数读取。"),
         DeclareLaunchArgument("input_color", default_value="rgb", description="[YOLO] 模型输入颜色顺序：rgb 或 bgr。"),
-        DeclareLaunchArgument("conf_threshold", default_value="0.001", description="[YOLO] 置信度阈值。此模型输出值偏低，默认 0.001。"),
+        DeclareLaunchArgument("conf_threshold", default_value="0.25", description="[YOLO] 置信度阈值。低于此值的候选框被过滤。"),
         DeclareLaunchArgument("nms_threshold", default_value="0.45", description="[YOLO] NMS IoU 阈值。"),
         DeclareLaunchArgument("max_detections", default_value="100", description="[YOLO] 单帧最多输出目标数。"),
         DeclareLaunchArgument(
@@ -43,6 +45,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("publish_debug_image", default_value="false", description="[调试] 是否发布画框图像。"),
         DeclareLaunchArgument("queue_size", default_value="3", description="[并行] 三个 NPU worker 共享的待处理帧队列长度，满了丢旧帧。"),
         DeclareLaunchArgument("log_period_sec", default_value="1.0", description="[调试] 推理耗时日志周期。"),
+        DeclareLaunchArgument("fusion_enabled", default_value="false", description="[后处理] 是否启用每类单框融合。开启后每类最多输出 1 个融合框。"),
+        DeclareLaunchArgument("fusion_iou_threshold", default_value="0.5", description="[后处理] 融合时同类别框聚类的 IoU 阈值。"),
         Node(
             package="rknn_yolo_detector_pkg",
             executable="rknn_yolo_detector_node",
@@ -65,6 +69,8 @@ def generate_launch_description() -> LaunchDescription:
                 "publish_debug_image": publish_debug_image,
                 "queue_size": queue_size,
                 "log_period_sec": log_period_sec,
+                "fusion_enabled": fusion_enabled,
+                "fusion_iou_threshold": fusion_iou_threshold,
             }],
         ),
     ])

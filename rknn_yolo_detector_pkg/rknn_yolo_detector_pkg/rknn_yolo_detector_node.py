@@ -182,6 +182,8 @@ class RknnYoloWorker(threading.Thread):
     def _make_debug_image(self, job: FrameJob, detections: list[Detection]) -> Image:
         image = job.image_bgr.copy()
         for det in detections:
+            cx = int(round(det.cx))
+            cy = int(round(det.cy))
             cv2.rectangle(
                 image,
                 (int(round(det.x1)), int(round(det.y1))),
@@ -189,6 +191,9 @@ class RknnYoloWorker(threading.Thread):
                 (0, 255, 0),
                 2,
             )
+            # Cross marker at center
+            cv2.line(image, (cx - 6, cy), (cx + 6, cy), (0, 255, 0), 2)
+            cv2.line(image, (cx, cy - 6), (cx, cy + 6), (0, 255, 0), 2)
             label = f"{det.class_id}:{det.confidence:.2f}"
             cv2.putText(
                 image,
@@ -219,7 +224,7 @@ class RknnYoloDetectorNode(Node):
         self.declare_parameter("input_height", 640)
         self.declare_parameter("num_classes", 0)
         self.declare_parameter("input_color", "rgb")
-        self.declare_parameter("conf_threshold", 0.001)
+        self.declare_parameter("conf_threshold", 0.25)
         self.declare_parameter("nms_threshold", 0.45)
         self.declare_parameter("max_detections", 100)
         self.declare_parameter(
@@ -229,6 +234,8 @@ class RknnYoloDetectorNode(Node):
         self.declare_parameter("publish_debug_image", False)
         self.declare_parameter("queue_size", 3)
         self.declare_parameter("log_period_sec", 1.0)
+        self.declare_parameter("fusion_enabled", False)
+        self.declare_parameter("fusion_iou_threshold", 0.5)
 
         self._model_path = str(self.get_parameter("model_path").value).strip()
         classes_path = str(self.get_parameter("classes_path").value).strip()
@@ -245,6 +252,8 @@ class RknnYoloDetectorNode(Node):
         self._publish_debug_image = _as_bool(self.get_parameter("publish_debug_image").value)
         queue_size = _as_int(self.get_parameter("queue_size").value)
         self._log_period_sec = _as_float(self.get_parameter("log_period_sec").value)
+        self._fusion_enabled = _as_bool(self.get_parameter("fusion_enabled").value)
+        self._fusion_iou_threshold = _as_float(self.get_parameter("fusion_iou_threshold").value)
 
         if not self._model_path:
             raise RuntimeError("model_path is required; pass the .rknn path in launch arguments")
@@ -277,6 +286,8 @@ class RknnYoloDetectorNode(Node):
             nms_threshold=nms_threshold,
             anchors=anchors,
             max_detections=max_detections,
+            fusion_enabled=self._fusion_enabled,
+            fusion_iou_threshold=self._fusion_iou_threshold,
         )
 
         self._detections_pub = self.create_publisher(Float32MultiArray, detections_topic, 10)
@@ -403,6 +414,8 @@ class RknnYoloDetectorNode(Node):
             msg.data.extend([
                 float(det.class_id),
                 float(det.confidence),
+                float(det.cx),
+                float(det.cy),
                 float(det.x1),
                 float(det.y1),
                 float(det.x2),

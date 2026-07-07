@@ -11,6 +11,8 @@ import numpy as np
 class Detection:
     class_id: int
     confidence: float
+    cx: float
+    cy: float
     x1: float
     y1: float
     x2: float
@@ -67,6 +69,8 @@ class YoloV5PostProcessor:
         anchors: np.ndarray,
         strides: Iterable[int] = (8, 16, 32),
         max_detections: int = 100,
+        fusion_enabled: bool = False,
+        fusion_iou_threshold: float = 0.5,
     ) -> None:
         self.input_width = input_width
         self.input_height = input_height
@@ -76,6 +80,8 @@ class YoloV5PostProcessor:
         self.anchors = anchors.astype(np.float32)
         self.strides = tuple(int(v) for v in strides)
         self.max_detections = max_detections
+        self.fusion_enabled = fusion_enabled
+        self.fusion_iou_threshold = fusion_iou_threshold
 
         if self.anchors.shape != (3, 3, 2):
             raise ValueError(f"anchors must have shape (3, 3, 2), got {self.anchors.shape}")
@@ -115,17 +121,108 @@ class YoloV5PostProcessor:
             for kept in kept_indexes:
                 src_index = indexes[kept]
                 x1, y1, x2, y2 = self._scale_box_to_original(boxes[src_index], letterbox_info)
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
                 detections.append(Detection(
                     class_id=int(class_id),
                     confidence=float(scores[src_index]),
+                    cx=cx,
+                    cy=cy,
                     x1=x1,
                     y1=y1,
                     x2=x2,
                     y2=y2,
                 ))
 
+        if self.fusion_enabled and detections:
+            detections = self._fuse_per_class(detections)
+
         detections.sort(key=lambda det: det.confidence, reverse=True)
         return detections[:self.max_detections]
+
+    def _fuse_per_class(self, detections: list[Detection]) -> list[Detection]:
+        """Weighted box fusion per class: cluster overlapping boxes, produce one per cluster."""
+        by_class: dict[int, list[Detection]] = {}
+        for det in detections:
+            by_class.setdefault(det.class_id, []).append(det)
+
+        fused: list[Detection] = []
+        for class_id, class_dets in by_class.items():
+            class_dets.sort(key=lambda d: d.confidence, reverse=True)
+            used = [False] * len(class_dets)
+            best_cluster: list[Detection] | None = None
+            best_cluster_conf = 0.0
+
+            for i, seed in enumerate(class_dets):
+                if used[i]:
+                    continue
+                # Start a new cluster with this seed
+                cluster: list[Detection] = [seed]
+                used[i] = True
+                # Gather overlapping boxes
+                for j in range(i + 1, len(class_dets)):
+                    if used[j]:
+                        continue
+                    if self._box_iou(seed, class_dets[j]) >= self.fusion_iou_threshold:
+                        cluster.append(class_dets[j])
+                        used[j] = True
+
+                # Keep only the highest-confidence cluster
+                cluster_peak = max(d.confidence for d in cluster)
+                if cluster_peak > best_cluster_conf:
+                    best_cluster = cluster
+                    best_cluster_conf = cluster_peak
+
+            if best_cluster is None or not best_cluster:
+                continue
+
+            # Confidence-weighted fusion of the best cluster
+            total_w = sum(d.confidence for d in best_cluster)
+            if total_w <= 0:
+                best = max(best_cluster, key=lambda d: d.confidence)
+                cx = best.cx
+                cy = best.cy
+                x1, y1, x2, y2 = best.x1, best.y1, best.x2, best.y2
+                conf = best.confidence
+            else:
+                cx = sum(d.confidence * d.cx for d in best_cluster) / total_w
+                cy = sum(d.confidence * d.cy for d in best_cluster) / total_w
+                x1 = sum(d.confidence * d.x1 for d in best_cluster) / total_w
+                y1 = sum(d.confidence * d.y1 for d in best_cluster) / total_w
+                x2 = sum(d.confidence * d.x2 for d in best_cluster) / total_w
+                y2 = sum(d.confidence * d.y2 for d in best_cluster) / total_w
+                conf = max(d.confidence for d in best_cluster)
+
+            fused.append(Detection(
+                class_id=class_id,
+                confidence=conf,
+                cx=cx,
+                cy=cy,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+            ))
+
+        return fused
+
+    def _box_iou(self, a: Detection, b: Detection) -> float:
+        """Compute IoU between two detections (in original image space)."""
+        ax1, ay1, ax2, ay2 = a.x1, a.y1, a.x2, a.y2
+        bx1, by1, bx2, by2 = b.x1, b.y1, b.x2, b.y2
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter = inter_w * inter_h
+        area_a = (ax2 - ax1) * (ay2 - ay1)
+        area_b = (bx2 - bx1) * (by2 - by1)
+        union = area_a + area_b - inter
+        if union <= 0:
+            return 0.0
+        return inter / union
 
     def _decode_outputs(self, outputs: list[np.ndarray]) -> np.ndarray:
         if len(outputs) == 1:
@@ -171,12 +268,15 @@ class YoloV5PostProcessor:
         w = flat[:, 2:3]
         h = flat[:, 3:4]
         boxes = np.concatenate([cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0], axis=1)
-        # obj is constant for this model (post-export flattened format)
-        # use class max directly as confidence
         cls_probs = np.clip(flat[:, 5:5 + self.num_classes], 0.0, 1.0)
         cls_ids = cls_probs.argmax(axis=1).astype(np.float32)
         cls_max = cls_probs.max(axis=1)
-        return np.column_stack([boxes, cls_max, cls_ids])
+        # Standard YOLO confidence: objectness × class_prob.
+        # Even if objectness is low/constant (~0.0018), multiplying it
+        # suppresses background grid cells where cls_max is spuriously high.
+        obj = np.clip(flat[:, 4], 0.0, 1.0)
+        scores = cls_max * obj
+        return np.column_stack([boxes, scores, cls_ids])
 
     def _decode_scale(self, output: np.ndarray, scale_index: int) -> np.ndarray:
         anchors = self.anchors[scale_index]
