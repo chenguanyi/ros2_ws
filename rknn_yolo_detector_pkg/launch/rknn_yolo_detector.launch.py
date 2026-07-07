@@ -32,7 +32,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("input_height", default_value="640", description="[YOLO] 模型输入高度。"),
         DeclareLaunchArgument("num_classes", default_value="0", description="[YOLO] 类别数；0 表示从 classes_path 行数读取。"),
         DeclareLaunchArgument("input_color", default_value="rgb", description="[YOLO] 模型输入颜色顺序：rgb 或 bgr。"),
-        DeclareLaunchArgument("conf_threshold", default_value="0.25", description="[YOLO] 置信度阈值。"),
+        DeclareLaunchArgument("conf_threshold", default_value="0.001", description="[YOLO] 置信度阈值。此模型输出值偏低，默认 0.001。"),
         DeclareLaunchArgument("nms_threshold", default_value="0.45", description="[YOLO] NMS IoU 阈值。"),
         DeclareLaunchArgument("max_detections", default_value="100", description="[YOLO] 单帧最多输出目标数。"),
         DeclareLaunchArgument(

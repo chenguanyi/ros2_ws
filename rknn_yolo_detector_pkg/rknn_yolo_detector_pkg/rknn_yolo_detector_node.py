@@ -219,7 +219,7 @@ class RknnYoloDetectorNode(Node):
         self.declare_parameter("input_height", 640)
         self.declare_parameter("num_classes", 0)
         self.declare_parameter("input_color", "rgb")
-        self.declare_parameter("conf_threshold", 0.25)
+        self.declare_parameter("conf_threshold", 0.001)
         self.declare_parameter("nms_threshold", 0.45)
         self.declare_parameter("max_detections", 100)
         self.declare_parameter(

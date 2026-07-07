@@ -88,11 +88,15 @@ class YoloV5PostProcessor:
             return []
 
         boxes = decoded[:, 0:4]
-        objectness = decoded[:, 4]
-        class_scores = decoded[:, 5:]
-        class_ids = np.argmax(class_scores, axis=1)
-        class_conf = class_scores[np.arange(class_scores.shape[0]), class_ids]
-        scores = objectness * class_conf
+        if decoded.shape[1] == 6:
+            scores = decoded[:, 4]
+            class_ids = decoded[:, 5].astype(np.int32)
+        else:
+            objectness = decoded[:, 4]
+            class_scores = decoded[:, 5:]
+            class_ids = np.argmax(class_scores, axis=1).astype(np.int32)
+            class_conf = class_scores[np.arange(class_scores.shape[0]), class_ids]
+            scores = objectness * class_conf
 
         keep = scores >= self.conf_threshold
         if not np.any(keep):
@@ -129,7 +133,7 @@ class YoloV5PostProcessor:
             if flat.ndim == 3 and flat.shape[0] == 1:
                 flat = flat[0]
             if flat.ndim == 2 and flat.shape[-1] >= 6:
-                return self._normalize_flat_output(flat)
+                return self._decode_flat_output(flat)
 
         if len(outputs) != 3:
             raise RuntimeError(f"standard YOLOv5 RKNN output expects 3 tensors, got {len(outputs)}")
@@ -160,17 +164,19 @@ class YoloV5PostProcessor:
 
         return np.concatenate(decoded_parts, axis=0)
 
-    def _normalize_flat_output(self, output: np.ndarray) -> np.ndarray:
+    def _decode_flat_output(self, output: np.ndarray) -> np.ndarray:
         flat = output.astype(np.float32, copy=False)
-        if flat.shape[-1] == 6:
-            boxes = flat[:, 0:4]
-            conf = flat[:, 4:5]
-            class_id = flat[:, 5].astype(np.int32)
-            class_scores = np.zeros((flat.shape[0], self.num_classes), dtype=np.float32)
-            valid = (class_id >= 0) & (class_id < self.num_classes)
-            class_scores[np.arange(flat.shape[0])[valid], class_id[valid]] = 1.0
-            return np.concatenate([boxes, conf, class_scores], axis=1)
-        return flat
+        cx = flat[:, 0:1]
+        cy = flat[:, 1:2]
+        w = flat[:, 2:3]
+        h = flat[:, 3:4]
+        boxes = np.concatenate([cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0], axis=1)
+        # obj is constant for this model (post-export flattened format)
+        # use class max directly as confidence
+        cls_probs = np.clip(flat[:, 5:5 + self.num_classes], 0.0, 1.0)
+        cls_ids = cls_probs.argmax(axis=1).astype(np.float32)
+        cls_max = cls_probs.max(axis=1)
+        return np.column_stack([boxes, cls_max, cls_ids])
 
     def _decode_scale(self, output: np.ndarray, scale_index: int) -> np.ndarray:
         anchors = self.anchors[scale_index]
