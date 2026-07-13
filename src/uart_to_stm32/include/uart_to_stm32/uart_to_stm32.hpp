@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/int16.hpp>
 #include <std_msgs/msg/u_int8.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -42,6 +44,7 @@ private:
   void velocityCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void targetVelocityCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
   void missionCompleteCallback(const std_msgs::msg::Empty::SharedPtr msg);
+  void barcodeCallback(const std_msgs::msg::Int32::SharedPtr msg);
   void onPillarCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void heightFilterEnabledCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void laserGroundHeightCallback(const std_msgs::msg::Float32::SharedPtr msg);
@@ -61,6 +64,7 @@ private:
     const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
     std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   void pillarSignalTimerCallback();
+  void a2StatusTimerCallback();
   void protocolDataHandler(uint8_t id, const std::vector<uint8_t> & data);
   void publishRawHeight(int16_t raw_value_cm);
 
@@ -68,6 +72,9 @@ private:
   void sendVelocityToSerial(const Eigen::Vector3d & transformed_velocity);
   void sendTargetVelocityToSerial(float vx_cm_per_s, float vy_cm_per_s, float vz_cm_per_s, float vyaw_deg_per_s);
   void sendMissionCompleteToSerial();
+  void startA2StatusTimer();
+  void stopA2StatusTimer();
+  bool sendA2StatusToSerial();
   bool sendHeightToSerial(int16_t height_cm);
   bool isValidFilteredHeight(int16_t raw_value_cm) const;
   void publishMissionHeight(int16_t height_cm, const char * source_name);
@@ -89,10 +96,12 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr on_pillar_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr height_filter_enabled_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr laser_ground_height_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr barcode_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr arm_command_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr magnet_command_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr signal_command_sub_;
   rclcpp::TimerBase::SharedPtr pillar_signal_timer_;
+  rclcpp::TimerBase::SharedPtr a2_status_timer_;
 
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_arm_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_magnet_service_;
@@ -112,15 +121,21 @@ private:
   bool route_task_active_;
   bool has_st_ready_pub_;
   bool forward_height_0x05_;
+  bool a2_status_enabled_;
+  bool a2_mission_active_;
+  rclcpp::Time a2_mission_start_time_;
+  std::mutex a2_status_mutex_;
 
   std::atomic<bool> on_pillar_{false};
   std::atomic<bool> height_filter_enabled_{false};
+  std::atomic<std::int32_t> latest_barcode_value_{0};
   std::atomic<std::uint8_t> arm_state_{0};
   std::atomic<std::uint8_t> magnet_state_{0};
   std::atomic<std::uint8_t> signal_state_{0};
 
   std::string height_source_;
   std::string laser_height_topic_;
+  std::string barcode_topic_;
   int cruise_height_cm_;
   int height_band_cm_;
   int min_valid_height_cm_;
@@ -134,6 +149,7 @@ private:
   static constexpr uint8_t MISSION_COMPLETE_VALUE = 0x06;
   static constexpr uint8_t PILLAR_SIGNAL_FRAME_ID = 0x22;
   static constexpr uint8_t AUX_CONTROL_FRAME_ID = 0x33;
+  static constexpr uint8_t A2_STATUS_FRAME_ID = 0xA2;
 };
 
 }  // namespace uart_to_stm32

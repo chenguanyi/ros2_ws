@@ -11,6 +11,7 @@
   <exec_depend>my_carto_pkg</exec_depend>
   <exec_depend>pid_control_pkg</exec_depend>
   <exec_depend>pillar_detector_pkg</exec_depend>
+  <exec_depend>rknn_yolo_detector_pkg</exec_depend>
   <exec_depend>uart_to_stm32</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

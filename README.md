@@ -33,7 +33,21 @@ ros2 launch my_launch warehouse_inventory.launch.py mission_mode:=target
 mylog/warehouse_inventory/latest_success.json
 ```
 
-`target` 会先用右侧摄像头扫描抽取二维码，再读取最近一次成功盘点日志，直接飞往目标货物；没有成功日志或日志中没有目标编号时不会起飞。
+运行过程中会持续更新：
+
+```text
+mylog/warehouse_inventory/latest_progress.json
+```
+
+最后一个货架点处理完成并进入返航前会立即更新 `latest_success.json`；如果有漏扫，文件也会生成，`complete=false` 且 `missing_coords` 会列出缺失位置。
+
+`target` 会读取最新成功盘点记录，等待右侧摄像头扫到目标二维码编号，再按记录中的标签位生成完整固定安全路线，并一次性发布到 `/d_task/planned_route`；到目标标签后继续视觉确认二维码，确认后打光并去终点降落。
+
+`/d_task/planned_route` 是一段较长 JSON，`ros2 topic echo` 可能显示 `...`；查看完整内容使用：
+
+```bash
+ros2 topic echo --full-length /d_task/planned_route
+```
 
 任务 launch 会自动把 ROS 日志保存到工作区的任务目录：
 
@@ -205,8 +219,8 @@ warehouse_inventory.launch.py
 - 面间切换使用安全路线，扫描点和绕行点离板至少 60 cm。
 - `inventory` 模式穷举面顺序与蛇形扫描变体，选最短安全路线后遍历 24 个点。
 - 每识别一个二维码后，水平激光点亮约 0.5 秒，LED 亮约 1 秒，并发布盘点结果。
-- 完整成功后保存 `inventory_<timestamp>.json` 并更新 `latest_success.json`。
-- `target` 模式上电扫描抽取二维码，读取 `latest_success.json`，直接飞到目标坐标；缺日志或缺编号时停止等待，不起飞。
+- 最后一个货架点完成或超时后立即保存 `inventory_<timestamp>.json` 并更新 `latest_success.json`；漏扫时也会落盘，靠 `complete=false` 和 `missing_coords` 排查。
+- `target` 模式读取 `latest_success.json`，用右侧摄像头扫到的二维码编号查表得到标签位，使用固定对称绕行点生成安全路线，并同步发布到 `/d_task/planned_route` 与 `/warehouse_inventory/route`；到标签后视觉确认二维码，打光后去终点降落。
 
 ## 工程边界
 

@@ -34,6 +34,7 @@ def generate_launch_description() -> LaunchDescription:
     uart_geometry_consistency_cm = LaunchConfiguration("uart_geometry_consistency_cm")
     uart_blend_weight = LaunchConfiguration("uart_blend_weight")
     obstacle_ema_alpha = LaunchConfiguration("obstacle_ema_alpha")
+    log_period_sec = LaunchConfiguration("log_period_sec")
 
     params = {
         "serial_port": "/dev/ttyS3",
@@ -78,10 +79,15 @@ def generate_launch_description() -> LaunchDescription:
         "uart_blend_weight": uart_blend_weight,
         "obstacle_ema_alpha": obstacle_ema_alpha,
         # 日志
-        "log_period_sec": 0.5,    # 高度日志打印间隔
+        "log_period_sec": log_period_sec,
     }
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "log_period_sec",
+            default_value="5.0",
+            description="[激光] 高度摘要日志周期，单位秒。",
+        ),
         DeclareLaunchArgument(
             "percentile",
             default_value="1.0",

@@ -18,8 +18,8 @@ from launch_ros.substitutions import FindPackageShare
 # Fixed geometry and fixed right-side camera fine-control mapping live in code.
 # Default path is requirement 1 inventory. Requirement 2 can be selected until
 # STM32 ready arrives by publishing std_msgs/UInt8 {data: 1} on /d_task/mode.
-# The drone then publishes /d_task/qr_id and waits for the ground station route
-# JSON before /is_st_ready is received.
+# Requirement 2 reads latest_success.json, uses the camera QR id to look up the
+# fixed label, then publishes the full fixed route on /d_task/planned_route.
 # =============================================================================
 
 BOTTOM_CAMERA_DEVICE = "/dev/v4l/by-id/usb-DECXIN_CAMERA_DECXIN_CAMERA_01.00.00-video-index0"
@@ -32,7 +32,7 @@ BARCODE_OVERLAY_TOPIC = "/warehouse_inventory/barcode_overlay"
 FINE_DATA_TOPIC = "/fine_data"
 VISUAL_TARGET_OFFSET_X_PX = 0.0
 VISUAL_TARGET_OFFSET_Y_PX = -20.0
-VISUAL_PIXEL_DEADZONE = 5.0
+VISUAL_PIXEL_DEADZONE = 20.0
 
 
 def _workspace_root() -> str:
@@ -68,6 +68,8 @@ def generate_launch_description() -> LaunchDescription:
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
+    ground_route_topic = LaunchConfiguration("ground_route_topic")
+    planned_route_topic = LaunchConfiguration("planned_route_topic")
     task_log_dir = _task_log_dir("warehouse_inventory")
 
     task_params = {
@@ -77,13 +79,15 @@ def generate_launch_description() -> LaunchDescription:
         "output_topic": "/target_position",
         "height_topic": "/height",
         "position_tolerance_cm": 5.0,
-        "height_tolerance_cm": 4.0,
-        "yaw_tolerance_deg": 3.0,
+        "height_tolerance_cm": 5.0,
+        "yaw_tolerance_deg": 4.0,
         "log_waypoint_targets": False,
         "timer_period_sec": 0.05,
         "barcode_topic": BARCODE_TOPIC,
         "fine_data_topic": FINE_DATA_TOPIC,
         "st_ready_topic": "/is_st_ready",
+        "ground_route_topic": ground_route_topic,
+        "planned_route_topic": planned_route_topic,
     }
 
     return LaunchDescription([
@@ -129,6 +133,16 @@ def generate_launch_description() -> LaunchDescription:
             default_value="true",
             description="Forward selected mission height through frame 0x05.",
         ),
+        DeclareLaunchArgument(
+            "ground_route_topic",
+            default_value="/d_task/route",
+            description="Legacy route input topic. Target mode now uses latest_success.json plus camera QR id.",
+        ),
+        DeclareLaunchArgument(
+            "planned_route_topic",
+            default_value="/d_task/planned_route",
+            description="Requirement 2 fixed planned route output topic for the ground station.",
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 _launch_path("my_carto_pkg", "fly_carto.launch.py")
@@ -143,6 +157,8 @@ def generate_launch_description() -> LaunchDescription:
                 "height_source": height_source,
                 "laser_height_topic": laser_height_topic,
                 "forward_height_0x05": forward_height_0x05,
+                "a2_status_enabled": "true",
+                "barcode_topic": BARCODE_TOPIC,
             }.items(),
         ),
         IncludeLaunchDescription(

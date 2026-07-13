@@ -116,7 +116,7 @@ class GroundHeightNode : public rclcpp::Node {
     declare_parameter<double>("obstacle_ema_alpha", 0.3);
 
     // --- 日志 ---
-    declare_parameter<double>("log_period_sec", 0.5);
+    declare_parameter<double>("log_period_sec", 5.0);
 
     get_parameter("serial_port", serial_port_name_);
     get_parameter("baud_rate", baud_rate_);
@@ -154,7 +154,7 @@ class GroundHeightNode : public rclcpp::Node {
     get_parameter("uart_geometry_consistency_cm", uart_geometry_consistency_cm_);
     get_parameter("uart_blend_weight", uart_blend_weight_);
     get_parameter("obstacle_ema_alpha", obstacle_ema_alpha_);
-    double log_period_sec = 0.5;
+    double log_period_sec = 5.0;
     get_parameter("log_period_sec", log_period_sec);
 
     percentile_ = std::clamp(percentile_, 0.0, 1.0);
@@ -191,7 +191,7 @@ class GroundHeightNode : public rclcpp::Node {
 
     openSerial();
 
-    // 定时打印当前高度（默认 0.5s 一次）
+    // 定时打印当前高度（默认 5s 一次）
     const auto period = std::chrono::milliseconds(
         static_cast<int>(std::max(0.05, log_period_sec) * 1000.0));
     log_timer_ = create_wall_timer(period, [this]() {

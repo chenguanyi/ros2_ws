@@ -24,8 +24,11 @@ UartToStm32::UartToStm32(rclcpp::Node::SharedPtr node)
   route_task_active_(false),
   has_st_ready_pub_(false),
   forward_height_0x05_(false),
+  a2_status_enabled_(false),
+  a2_mission_active_(false),
   height_source_("serial_raw"),
   laser_height_topic_("/laser_array/ground_height"),
+  barcode_topic_("/warehouse_inventory/barcode_value"),
   cruise_height_cm_(130),
   height_band_cm_(20),
   min_valid_height_cm_(0),
@@ -110,6 +113,9 @@ bool UartToStm32::initialize(double update_rate, const std::string & source_fram
     height_source_ = node_->declare_parameter<std::string>("height_source", "serial_raw");
     laser_height_topic_ = node_->declare_parameter<std::string>(
       "laser_height_topic", "/laser_array/ground_height");
+    a2_status_enabled_ = node_->declare_parameter<bool>("a2_status_enabled", false);
+    barcode_topic_ = node_->declare_parameter<std::string>(
+      "barcode_topic", "/warehouse_inventory/barcode_value");
     const bool legacy_forward_raw_height_0x05 =
       node_->declare_parameter<bool>("forward_raw_height_0x05", false);
     forward_height_0x05_ =
@@ -130,6 +136,16 @@ bool UartToStm32::initialize(double update_rate, const std::string & source_fram
     }
 
     const auto latched_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
+    if (a2_status_enabled_) {
+      barcode_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
+        barcode_topic_,
+        latched_qos,
+        std::bind(&UartToStm32::barcodeCallback, this, std::placeholders::_1));
+      a2_status_timer_ = node_->create_wall_timer(
+        1s, std::bind(&UartToStm32::a2StatusTimerCallback, this));
+      a2_status_timer_->cancel();
+    }
+
     on_pillar_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
       "/on_pillar", latched_qos,
       std::bind(&UartToStm32::onPillarCallback, this, std::placeholders::_1));
@@ -187,10 +203,12 @@ bool UartToStm32::initialize(double update_rate, const std::string & source_fram
     RCLCPP_INFO(node_->get_logger(), "UartToStm32 initialized successfully");
     RCLCPP_INFO(
       node_->get_logger(),
-      "Height source=%s laser_topic=%s forward_0x05=%s",
+      "Height source=%s laser_topic=%s forward_0x05=%s a2_status=%s barcode_topic=%s",
       height_source_.c_str(),
       laser_height_topic_.c_str(),
-      forward_height_0x05_ ? "on" : "off");
+      forward_height_0x05_ ? "on" : "off",
+      a2_status_enabled_ ? "on" : "off",
+      barcode_topic_.c_str());
     RCLCPP_DEBUG(
       node_->get_logger(),
       "Subscribed to /velocity_map, /active_controller, /target_velocity, /mission_complete, and aux command topics");
@@ -439,6 +457,7 @@ void UartToStm32::protocolDataHandler(uint8_t id, const std::vector<uint8_t> & d
           RCLCPP_INFO(node_->get_logger(), "Published /is_st_ready: 1 (from 0xF1 frame)");
         }
         has_st_ready_pub_ = true;
+        startA2StatusTimer();
       } else {
         RCLCPP_DEBUG(node_->get_logger(), "0xF1 frame second byte != 1 (%u), ignoring", static_cast<unsigned>(second));
       }
@@ -503,12 +522,138 @@ void UartToStm32::sendMissionCompleteToSerial()
   }
 }
 
+void UartToStm32::startA2StatusTimer()
+{
+  if (!a2_status_enabled_) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(a2_status_mutex_);
+    a2_mission_start_time_ = node_->now();
+    a2_mission_active_ = true;
+  }
+
+  if (a2_status_timer_) {
+    a2_status_timer_->reset();
+  }
+
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "A2 status timer started. Sending task elapsed time and QR value once per second.");
+}
+
+void UartToStm32::stopA2StatusTimer()
+{
+  if (!a2_status_enabled_) {
+    return;
+  }
+
+  if (a2_status_timer_) {
+    a2_status_timer_->cancel();
+  }
+
+  bool was_active = false;
+  {
+    std::lock_guard<std::mutex> lock(a2_status_mutex_);
+    was_active = a2_mission_active_;
+    a2_mission_active_ = false;
+  }
+
+  if (was_active) {
+    RCLCPP_INFO(node_->get_logger(), "A2 status timer stopped.");
+  }
+}
+
+bool UartToStm32::sendA2StatusToSerial()
+{
+  if (!a2_status_enabled_) {
+    return false;
+  }
+
+  std::uint32_t elapsed_seconds = 0U;
+  {
+    std::lock_guard<std::mutex> lock(a2_status_mutex_);
+    if (!a2_mission_active_) {
+      return false;
+    }
+
+    const double elapsed = (node_->now() - a2_mission_start_time_).seconds();
+    if (elapsed <= 0.0) {
+      elapsed_seconds = 0U;
+    } else if (elapsed >= static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+      elapsed_seconds = std::numeric_limits<std::uint32_t>::max();
+    } else {
+      elapsed_seconds = static_cast<std::uint32_t>(elapsed);
+    }
+  }
+
+  if (!serial_comm_ || !serial_comm_->is_open()) {
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Serial port is not open, cannot send A2 status data");
+    return false;
+  }
+
+  const std::int32_t raw_barcode = latest_barcode_value_.load();
+  std::int16_t barcode = 0;
+  if (raw_barcode > 0) {
+    if (raw_barcode > static_cast<std::int32_t>(std::numeric_limits<std::int16_t>::max())) {
+      barcode = std::numeric_limits<std::int16_t>::max();
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 5000,
+        "A2 barcode value %d exceeds int16 max. Clamping to %d.",
+        raw_barcode,
+        static_cast<int>(barcode));
+    } else {
+      barcode = static_cast<std::int16_t>(raw_barcode);
+    }
+  }
+
+  std::vector<uint8_t> data(6);
+  data[0] = static_cast<uint8_t>(elapsed_seconds & 0xFFU);
+  data[1] = static_cast<uint8_t>((elapsed_seconds >> 8) & 0xFFU);
+  data[2] = static_cast<uint8_t>((elapsed_seconds >> 16) & 0xFFU);
+  data[3] = static_cast<uint8_t>((elapsed_seconds >> 24) & 0xFFU);
+
+  const uint16_t barcode_bits = static_cast<uint16_t>(barcode);
+  data[4] = static_cast<uint8_t>(barcode_bits & 0xFFU);
+  data[5] = static_cast<uint8_t>((barcode_bits >> 8) & 0xFFU);
+
+  const bool ok = serial_comm_->send_protocol_data(
+    A2_STATUS_FRAME_ID,
+    static_cast<uint8_t>(data.size()),
+    data);
+  if (!ok) {
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Failed to send A2 status frame: %s",
+      serial_comm_->get_last_error().c_str());
+    return false;
+  }
+
+  RCLCPP_DEBUG_THROTTLE(
+    node_->get_logger(), *node_->get_clock(), 1000,
+    "Sent A2 status: elapsed=%u sec barcode=%d",
+    elapsed_seconds,
+    static_cast<int>(barcode));
+  return true;
+}
+
 void UartToStm32::missionCompleteCallback(const std_msgs::msg::Empty::SharedPtr)
 {
   RCLCPP_INFO(
     node_->get_logger(),
     "Received mission complete event. Sending frame 0x%02X three times.",
     static_cast<unsigned>(MISSION_COMPLETE_FRAME_ID));
+
+  if (a2_status_enabled_) {
+    if (a2_status_timer_) {
+      a2_status_timer_->cancel();
+    }
+    sendA2StatusToSerial();
+    stopA2StatusTimer();
+  }
 
   for (int i = 0; i < 3; ++i) {
     sendMissionCompleteToSerial();
@@ -519,6 +664,18 @@ void UartToStm32::missionCompleteCallback(const std_msgs::msg::Empty::SharedPtr)
   RCLCPP_INFO(
     node_->get_logger(),
     "Mission complete sent. Target velocity forwarding is now disabled until /active_controller=2.");
+}
+
+void UartToStm32::barcodeCallback(const std_msgs::msg::Int32::SharedPtr msg)
+{
+  if (msg->data <= 0) {
+    return;
+  }
+
+  latest_barcode_value_.store(msg->data);
+  RCLCPP_DEBUG_THROTTLE(
+    node_->get_logger(), *node_->get_clock(), 1000,
+    "Updated A2 barcode value: %d", msg->data);
 }
 
 void UartToStm32::onPillarCallback(const std_msgs::msg::Bool::SharedPtr msg)
@@ -552,6 +709,22 @@ void UartToStm32::pillarSignalTimerCallback()
   RCLCPP_DEBUG_THROTTLE(
     node_->get_logger(), *node_->get_clock(), 2000,
     "Sent pillar signal: 0x22/0x%02X", static_cast<unsigned>(payload));
+}
+
+void UartToStm32::a2StatusTimerCallback()
+{
+  if (!a2_status_enabled_) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(a2_status_mutex_);
+    if (!a2_mission_active_) {
+      return;
+    }
+  }
+
+  sendA2StatusToSerial();
 }
 
 void UartToStm32::heightFilterEnabledCallback(const std_msgs::msg::Bool::SharedPtr msg)

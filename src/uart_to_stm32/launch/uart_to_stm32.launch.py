@@ -8,6 +8,8 @@ def generate_launch_description() -> LaunchDescription:
     height_source = LaunchConfiguration("height_source")
     laser_height_topic = LaunchConfiguration("laser_height_topic")
     forward_height_0x05 = LaunchConfiguration("forward_height_0x05")
+    a2_status_enabled = LaunchConfiguration("a2_status_enabled")
+    barcode_topic = LaunchConfiguration("barcode_topic")
 
     uart_params = {
         "update_rate": 100.0,
@@ -20,6 +22,8 @@ def generate_launch_description() -> LaunchDescription:
         "height_source": height_source,
         "laser_height_topic": laser_height_topic,
         "forward_height_0x05": forward_height_0x05,
+        "a2_status_enabled": a2_status_enabled,
+        "barcode_topic": barcode_topic,
     }
 
     return LaunchDescription([
@@ -37,6 +41,16 @@ def generate_launch_description() -> LaunchDescription:
             "forward_height_0x05",
             default_value="false",
             description="Whether to forward the selected mission height downstream using frame ID 0x05.",
+        ),
+        DeclareLaunchArgument(
+            "a2_status_enabled",
+            default_value="false",
+            description="Whether to send D-task A2 elapsed-time and QR status frames.",
+        ),
+        DeclareLaunchArgument(
+            "barcode_topic",
+            default_value="/warehouse_inventory/barcode_value",
+            description="QR/barcode topic used by optional A2 status frames.",
         ),
         Node(
             package="uart_to_stm32",

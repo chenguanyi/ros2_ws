@@ -16,6 +16,22 @@ G 题植保任务：
 ros2 launch my_launch plant_protection.launch.py
 ```
 
+电赛第一题任务（启动后等待网页 HTTP 指令）：
+
+```bash
+ros2 launch my_launch diansai_first.launch.py
+```
+
+网页向香橙派发送：
+
+```bash
+curl -X POST http://<orange-pi-ip>:8080/relay_delivery \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"20260707-153012","mission_type":"relay_delivery","item_id":1,"item_name":"AED 自动体外除颤器","target_location":"A楼","source":"web"}'
+```
+
+HTTP bridge 会把 JSON 原文转发到 ROS topic `/web/relay_delivery`，任务节点收到后开始执行。
+
 任务日志会保存到工作区 `mylog/<任务名>/` 目录。
 
 相机源单独启动：

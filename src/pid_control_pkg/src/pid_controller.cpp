@@ -399,8 +399,17 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
         vel_z_cm = pid_visual_z_.calculate(0.0, visual_error_y_px_, dt);
         z_velocity_from_visual = true;
       } else {
-        vel_x_cm = pid_visual_y_.calculate(0.0, -visual_error_x_px_, dt);
-        vel_y_cm = pid_visual_x_.calculate(0.0, -visual_error_y_px_, dt);
+        /* legacy_xy 模式坐标约定（当前底部相机安装方向）：
+         *
+         * 当前摄像头安装方向下，视觉误差轴与机体速度轴交换：
+         *   vel_x_cm 使用 visual_error_y_px_
+         *   vel_y_cm 使用 visual_error_x_px_
+         *
+         * pid_visual_x_ / pid_visual_y_ 参数当前相同；关键是速度轴使用哪个视觉误差。
+         * 对 X/Y 都取负号，以匹配 setpoint=0 时的速度修正方向。
+         */
+        vel_x_cm = pid_visual_y_.calculate(0.0, -visual_error_y_px_, dt);
+        vel_y_cm = pid_visual_x_.calculate(0.0, visual_error_x_px_, dt);
       }
       velocities_are_in_body_frame = true;
     } else {

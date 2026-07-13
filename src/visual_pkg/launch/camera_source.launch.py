@@ -11,6 +11,7 @@ def generate_launch_description() -> LaunchDescription:
     height = LaunchConfiguration("height")
     camera_fps = LaunchConfiguration("camera_fps")
     publish_fps = LaunchConfiguration("publish_fps")
+    fourcc = LaunchConfiguration("fourcc")
     retry_period_sec = LaunchConfiguration("retry_period_sec")
     frame_id = LaunchConfiguration("frame_id")
     image_topic = LaunchConfiguration("image_topic")
@@ -26,6 +27,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("height", default_value="480", description="[相机] 图像高度。"),
         DeclareLaunchArgument("camera_fps", default_value="30", description="[相机] 设备采集帧率。"),
         DeclareLaunchArgument("publish_fps", default_value="30.0", description="[相机] 图像发布帧率。"),
+        DeclareLaunchArgument("fourcc", default_value="", description="[相机] 可选 V4L2 像素格式，例如 MJPG/YUYV；空表示驱动默认。"),
         DeclareLaunchArgument("retry_period_sec", default_value="1.0", description="[相机] 打开失败后的重试间隔。"),
         DeclareLaunchArgument("frame_id", default_value="camera", description="[相机] 图像 frame_id。"),
         DeclareLaunchArgument("image_topic", default_value="/camera/image_raw", description="[相机] 图像输出话题。"),
@@ -41,6 +43,7 @@ def generate_launch_description() -> LaunchDescription:
                 "height": height,
                 "camera_fps": camera_fps,
                 "publish_fps": publish_fps,
+                "fourcc": fourcc,
                 "retry_period_sec": retry_period_sec,
                 "frame_id": frame_id,
                 "image_topic": image_topic,
